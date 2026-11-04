@@ -125,15 +125,14 @@
     </script>
     <button type="button" class="btn sm" onclick="event.preventDefault(); addPhotoInput(); return false;">+ Thêm ảnh</button>
     {% if prev_photos %}
-    <p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">📋 Ảnh đã lưu:</p>
-    <div class="photo-grid" style="margin-bottom:12px;">
-      {% for p in prev_photos %}
-      <div>
-        <img src="/uploads/{{ p.filename }}" alt="saved">
-        <div style="font-size:10px;color:var(--muted);">{{ p.caption or '' }}</div>
-      </div>
-      {% endfor %}
+    <p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">📋 Ảnh đã lưu (sửa mô tả bên dưới):</p>
+    {% for p in prev_photos %}
+    <div class="form-row" style="margin-bottom:8px;align-items:center;">
+      <img src="/uploads/{{ p.filename }}" style="width:60px;height:60px;object-fit:cover;border-radius:8px;">
+      <input type="text" name="existing_photo_captions" value="{{ p.caption or '' }}" placeholder="Mô tả ảnh" style="flex:2;">
+      <input type="hidden" name="existing_photo_ids" value="{{ p.id }}">
     </div>
+    {% endfor %}
     {% endif %}
     <div class="photo-grid" id="photo-preview"></div>
   </div>

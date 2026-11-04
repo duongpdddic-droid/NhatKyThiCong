@@ -324,6 +324,14 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
 
+        # Update captions for existing photos
+        existing_ids = form.getlist("existing_photo_ids")
+        existing_captions = form.getlist("existing_photo_captions")
+        for i, pid in enumerate(existing_ids):
+            if pid:
+                cap = existing_captions[i] if i < len(existing_captions) else ""
+                c.execute("UPDATE diary_photos SET caption=? WHERE id=?", (cap, int(pid)))
+
         c.commit()
     finally:
         c.close()
