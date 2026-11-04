@@ -1,5 +1,39 @@
 {% extends "base.html" %}
-{% block title %}Cài đặt{% endblock %}
+{% block title %}Cài đặt
+<script>
+async function testWeather() {
+  const res = document.getElementById('weather-result');
+  res.textContent = 'Đang kiểm tra...';
+  try {
+    const r = await fetch('/api/weather?lat=21.0&lon=105.8');
+    const d = await r.json();
+    if (d.temp !== null && d.temp !== undefined) {
+      res.innerHTML = '<span style="color:var(--success);">✅ OK:</span> ' + d.temp + '°C — ' + d.desc;
+    } else {
+      res.innerHTML = '<span style="color:var(--danger);">❌ Lỗi:</span> ' + (d.desc || 'Không có dữ liệu. Kiểm tra API key.');
+    }
+  } catch (e) {
+    res.innerHTML = '<span style="color:var(--danger);">❌ Lỗi:</span> ' + e.message;
+  }
+}
+
+async function testTelegram() {
+  const res = document.getElementById('telegram-result');
+  res.textContent = 'Đang kiểm tra...';
+  try {
+    const r = await fetch('/api/test-telegram');
+    const d = await r.json();
+    if (d.ok) {
+      res.innerHTML = '<span style="color:var(--success);">✅ OK:</span> Bot @' + d.bot + ' hoạt động';
+    } else {
+      res.innerHTML = '<span style="color:var(--danger);">❌ Lỗi:</span> ' + d.error;
+    }
+  } catch (e) {
+    res.innerHTML = '<span style="color:var(--danger);">❌ Lỗi:</span> ' + e.message;
+  }
+}
+</script>
+{% endblock %}
 {% block content %}
 <h2>Cài đặt hệ thống</h2>
 <a href="/admin/users" class="btn sm">👥 User</a>
@@ -12,6 +46,8 @@
     <input type="text" name="openweather_api_key" value="{{ settings.get('openweather_api_key', '') }}" placeholder="Nhập API key từ openweathermap.org">
   </div>
   <p style="font-size:12px;color:var(--muted);">Đăng ký miễn phí tại <a href="https://openweathermap.org/api" target="_blank">openweathermap.org/api</a></p>
+  <button type="button" class="btn sm" onclick="testWeather()">🌤️ Test Weather</button>
+  <div id="weather-result" style="margin-top:8px;font-size:13px;"></div>
 
   <h2 style="margin-top:16px;">Telegram Bot</h2>
   <div class="form-group">
@@ -19,6 +55,8 @@
     <input type="text" name="telegram_bot_token" value="{{ settings.get('telegram_bot_token', '') }}" placeholder="Token từ @BotFather">
   </div>
   <p style="font-size:12px;color:var(--muted);">Tạo bot: chat @BotFather → /newbot → copy token</p>
+  <button type="button" class="btn sm" onclick="testTelegram()">📱 Test Telegram</button>
+  <div id="telegram-result" style="margin-top:8px;font-size:13px;"></div>
 
   <button type="submit" class="btn primary full" style="margin-top:12px;">💾 Lưu cài đặt</button>
 </form>

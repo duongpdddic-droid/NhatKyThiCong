@@ -286,6 +286,31 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
 
 # ── Admin: Settings ───────────────────────────────────────────────────────────
 
+@app.get("/api/test-telegram")
+async def test_telegram():
+    import httpx
+    # Read token from settings
+    c = connect()
+    try:
+        row = c.execute("SELECT value FROM settings WHERE key='telegram_bot_token'").fetchone()
+    finally:
+        c.close()
+    token = row["value"] if row and row["value"] else ""
+    if not token:
+        token = __import__("os").getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        return {"ok": False, "error": "Chưa cấu hình Bot Token"}
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
+            data = r.json()
+        if data.get("ok"):
+            return {"ok": True, "bot": data["result"]["username"]}
+        return {"ok": False, "error": data.get("description", "Token sai")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/admin/settings", response_class=HTMLResponse)
 def admin_settings(request: Request, user=Depends(require_role("admin"))):
     c = connect()
