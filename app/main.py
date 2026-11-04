@@ -305,14 +305,21 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             if f and f.filename:
                 ext = Path(f.filename).suffix
                 fname = f"diary_{diary_id}_{len(os.listdir(UPLOAD_DIR))}{ext}"
+                import os as _os
+                _os.makedirs(str(UPLOAD_DIR), exist_ok=True)
                 fpath = UPLOAD_DIR / fname
                 file_content = await f.read()
+                if not file_content:
+                    continue
                 with open(fpath, "wb") as fh:
                     fh.write(file_content)
-                # Add timemark
-                from datetime import datetime
-                stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-                _add_timemark(str(fpath), stamp)
+                # Add timemark (non-fatal)
+                try:
+                    from datetime import datetime
+                    stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    _add_timemark(str(fpath), stamp)
+                except Exception as te:
+                    print("Timemark error:", te)
                 caption = captions[i] if i < len(captions) else ""
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
@@ -751,11 +758,16 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                 __import__("os").makedirs(str(upload_dir), exist_ok=True)
                 fpath = upload_dir / fname
                 file_content = await f.read()
+                if not file_content:
+                    continue
                 with open(fpath, "wb") as fh:
                     fh.write(file_content)
-                from datetime import datetime
-                stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-                _add_timemark(str(fpath), stamp)
+                try:
+                    from datetime import datetime
+                    stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    _add_timemark(str(fpath), stamp)
+                except Exception as te:
+                    print("Timemark error:", te)
                 caption = captions[i] if i < len(captions) else ""
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
