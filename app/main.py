@@ -217,22 +217,28 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             else:
                 diary_id = cur.lastrowid
 
-        # Labor
-        for key, val in form.items():
-            if key.startswith("labor_"):
-                lt_id = int(key.split("_")[1])
-                count = int(val or 0)
-                if count > 0:
-                    c.execute("INSERT INTO diary_labor (diary_id, labor_type_id, count) VALUES (?,?,?)",
-                              (diary_id, lt_id, count))
-        # Machinery
-        for key, val in form.items():
-            if key.startswith("machinery_"):
-                mt_id = int(key.split("_")[1])
-                hours = float(val or 0)
-                if hours > 0:
-                    c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
-                              (diary_id, mt_id, hours))
+        # Labor (dropdown approach)
+        labor_ids_str = form.get("labor_ids", "")
+        for lt_id_str in labor_ids_str.split(","):
+            lt_id_str = lt_id_str.strip()
+            if not lt_id_str:
+                continue
+            lt_id = int(lt_id_str)
+            count = int(form.get(f"labor_{lt_id}", 0) or 0)
+            if count > 0:
+                c.execute("INSERT INTO diary_labor (diary_id, labor_type_id, count) VALUES (?,?,?)",
+                          (diary_id, lt_id, count))
+        # Machinery (dropdown approach)
+        machinery_ids_str = form.get("machinery_ids", "")
+        for mt_id_str in machinery_ids_str.split(","):
+            mt_id_str = mt_id_str.strip()
+            if not mt_id_str:
+                continue
+            mt_id = int(mt_id_str)
+            hours = float(form.get(f"machinery_{mt_id}", 0) or 0)
+            if hours > 0:
+                c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
+                          (diary_id, mt_id, hours))
         # Materials
         mat_names = form.getlist("mat_name")
         mat_units = form.getlist("mat_unit")
@@ -255,17 +261,20 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                            task_units[i] if i < len(task_units) else "",
                            float(task_pcts[i] or 0) if i < len(task_pcts) else 0))
 
-        # Photos
+        # Photos with captions
         files = form.getlist("photos")
-        for f in files:
+        captions = form.getlist("photo_captions")
+        for i, f in enumerate(files):
             if f and f.filename:
                 ext = Path(f.filename).suffix
                 fname = f"diary_{diary_id}_{len(os.listdir(UPLOAD_DIR))}{ext}"
                 fpath = UPLOAD_DIR / fname
-                content = await f.read()
+                file_content = await f.read()
                 with open(fpath, "wb") as fh:
-                    fh.write(content)
-                c.execute("INSERT INTO diary_photos (diary_id, filename) VALUES (?,?)", (diary_id, fname))
+                    fh.write(file_content)
+                caption = captions[i] if i < len(captions) else ""
+                c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
+                          (diary_id, fname, caption))
 
         c.commit()
     finally:
@@ -596,20 +605,26 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
             c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
 
-        for key, val in form.items():
-            if key.startswith("labor_"):
-                lt_id = int(key.split("_")[1])
-                count = int(val or 0)
-                if count > 0:
-                    c.execute("INSERT INTO diary_labor (diary_id, labor_type_id, count) VALUES (?,?,?)",
-                              (diary_id, lt_id, count))
-        for key, val in form.items():
-            if key.startswith("machinery_"):
-                mt_id = int(key.split("_")[1])
-                hours = float(val or 0)
-                if hours > 0:
-                    c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
-                              (diary_id, mt_id, hours))
+        labor_ids_str = form.get("labor_ids", "")
+        for lt_id_str in labor_ids_str.split(","):
+            lt_id_str = lt_id_str.strip()
+            if not lt_id_str:
+                continue
+            lt_id = int(lt_id_str)
+            count = int(form.get(f"labor_{lt_id}", 0) or 0)
+            if count > 0:
+                c.execute("INSERT INTO diary_labor (diary_id, labor_type_id, count) VALUES (?,?,?)",
+                          (diary_id, lt_id, count))
+        machinery_ids_str = form.get("machinery_ids", "")
+        for mt_id_str in machinery_ids_str.split(","):
+            mt_id_str = mt_id_str.strip()
+            if not mt_id_str:
+                continue
+            mt_id = int(mt_id_str)
+            hours = float(form.get(f"machinery_{mt_id}", 0) or 0)
+            if hours > 0:
+                c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
+                          (diary_id, mt_id, hours))
         mat_names = form.getlist("mat_name")
         mat_units = form.getlist("mat_unit")
         mat_qtys = form.getlist("mat_qty")
@@ -631,15 +646,18 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                            float(task_pcts[i] or 0) if i < len(task_pcts) else 0))
 
         files = form.getlist("photos")
-        for f in files:
+        captions = form.getlist("photo_captions")
+        for i, f in enumerate(files):
             if f and f.filename:
                 ext = __import__("pathlib").Path(f.filename).suffix
                 fname = f"diary_{diary_id}_{len(__import__('os').listdir(str(__import__('pathlib').Path(__file__).parent.parent / 'uploads')))}{ext}"
                 fpath = __import__("pathlib").Path(__file__).parent.parent / "uploads" / fname
-                content = await f.read()
+                file_content = await f.read()
                 with open(fpath, "wb") as fh:
-                    fh.write(content)
-                c.execute("INSERT INTO diary_photos (diary_id, filename) VALUES (?,?)", (diary_id, fname))
+                    fh.write(file_content)
+                caption = captions[i] if i < len(captions) else ""
+                c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
+                          (diary_id, fname, caption))
 
         c.commit()
     finally:

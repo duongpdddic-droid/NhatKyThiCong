@@ -42,23 +42,35 @@
   </div>
 
   <div class="section">
-    <h2>§3 Nhân lực <span class="auto-badge">📋 Từ ngày trước</span></h2>
-    {% for lt in labor_types %}
-    <div class="form-row" style="align-items:center;margin-bottom:6px;">
-      <label style="flex:2;margin:0;">{{ lt.name }}</label>
-      <input type="number" name="labor_{{ lt.id }}" value="{{ prev_labor.get(lt.id, 0) }}" min="0" style="flex:1;" onchange="calcWorkers()">
+    <h2>§3 Nhân lực</h2>
+    <div class="form-row" style="margin-bottom:8px;">
+      <select id="labor-select" style="flex:2;padding:8px;border:1px solid var(--border);border-radius:8px;">
+        <option value="">-- Chọn loại thợ --</option>
+        {% for lt in labor_types %}
+        <option value="{{ lt.id }}" data-name="{{ lt.name }}">{{ lt.name }}</option>
+        {% endfor %}
+      </select>
+      <input type="number" id="labor-count" placeholder="Số người" min="1" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
+      <button type="button" class="btn sm primary" onclick="addLabor()">+ Thêm</button>
     </div>
-    {% endfor %}
+    <div id="labor-list"></div>
+    <input type="hidden" name="labor_ids" id="labor-ids">
   </div>
 
   <div class="section">
-    <h2>§4 Máy móc thiết bị <span class="auto-badge">📋 Từ ngày trước</span></h2>
-    {% for mt in machinery_types %}
-    <div class="form-row" style="align-items:center;margin-bottom:6px;">
-      <label style="flex:2;margin:0;">{{ mt.name }} ({{ mt.unit }})</label>
-      <input type="number" step="0.5" name="machinery_{{ mt.id }}" value="{{ prev_machinery.get(mt.id, 0) }}" min="0" style="flex:1;">
+    <h2>§4 Máy móc thiết bị</h2>
+    <div class="form-row" style="margin-bottom:8px;">
+      <select id="machinery-select" style="flex:2;padding:8px;border:1px solid var(--border);border-radius:8px;">
+        <option value="">-- Chọn máy móc --</option>
+        {% for mt in machinery_types %}
+        <option value="{{ mt.id }}" data-name="{{ mt.name }}" data-unit="{{ mt.unit }}">{{ mt.name }} ({{ mt.unit }})</option>
+        {% endfor %}
+      </select>
+      <input type="number" step="0.5" id="machinery-hours" placeholder="Số giờ" min="0.5" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
+      <button type="button" class="btn sm primary" onclick="addMachinery()">+ Thêm</button>
     </div>
-    {% endfor %}
+    <div id="machinery-list"></div>
+    <input type="hidden" name="machinery_ids" id="machinery-ids">
   </div>
 
   <div class="section">
@@ -81,11 +93,20 @@
     <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">📋 Ảnh từ ngày trước:</p>
     <div class="photo-grid" style="margin-bottom:12px;">
       {% for p in prev_photos %}
-      <img src="/uploads/{{ p.filename }}" alt="prev" style="opacity:0.6;border:2px dashed var(--muted);">
+      <div style="position:relative;">
+        <img src="/uploads/{{ p.filename }}" alt="prev" style="opacity:0.6;border:2px dashed var(--muted);">
+        <div style="font-size:10px;color:var(--muted);">{{ p.caption or '' }}</div>
+      </div>
       {% endfor %}
     </div>
     {% endif %}
-    <input type="file" name="photos" multiple accept="image/*" capture="environment">
+    <div id="photo-inputs">
+      <div class="form-row" style="margin-bottom:8px;align-items:center;">
+        <input type="file" name="photos" accept="image/*" capture="environment" style="flex:2;">
+        <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:2;">
+      </div>
+    </div>
+    <button type="button" class="btn sm" onclick="addPhotoInput()">+ Thêm ảnh</button>
     <div class="photo-grid" id="photo-preview"></div>
   </div>
 
@@ -121,30 +142,99 @@
 </form>
 
 <script>
-function loadWeather() {
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      const r = await fetch(`/api/weather?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`);
-      const d = await r.json();
-      if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
-      document.getElementById('weather_desc').value = d.desc;
-    });
-  } else {
-    fetch('/api/weather').then(r=>r.json()).then(d => {
-      if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
-      document.getElementById('weather_desc').value = d.desc;
-    });
-  }
-}
-// Auto load weather on page load
-window.addEventListener('load', loadWeather);
+// Auto-fill labor/machinery from previous day (passed from server)
+const prevLabor = {{ prev_labor | tojson }};
+const prevMachinery = {{ prev_machinery | tojson }};
 
-function calcWorkers() {
-  let total = 0;
-  document.querySelectorAll('input[name^="labor_"]').forEach(inp => {
-    total += parseInt(inp.value || 0);
+// Render previous labor
+Object.entries(prevLabor).forEach(([id, count]) => {
+  if (count > 0) addLaborRow(id, count, true);
+});
+// Render previous machinery
+Object.entries(prevMachinery).forEach(([id, hours]) => {
+  if (hours > 0) addMachineryRow(id, hours, true);
+});
+
+function addLabor() {
+  const sel = document.getElementById('labor-select');
+  const count = document.getElementById('labor-count').value;
+  if (!sel.value || !count) { alert('Chọn loại thợ và nhập số lượng'); return; }
+  addLaborRow(sel.value, count, false);
+  sel.value = '';
+  document.getElementById('labor-count').value = '';
+}
+
+function addLaborRow(id, count, isPrev) {
+  const sel = document.getElementById('labor-select');
+  const opt = sel.querySelector(`option[value="${id}"]`);
+  const name = opt ? opt.dataset.name : id;
+  const list = document.getElementById('labor-list');
+  const div = document.createElement('div');
+  div.className = 'form-row';
+  div.style.marginBottom = '6px';
+  div.innerHTML = `
+    <span style="flex:2;">${name}</span>
+    <input type="number" name="labor_${id}" value="${count}" min="1" style="flex:1;">
+    <button type="button" class="btn sm" style="color:var(--danger);" onclick="this.parentElement.remove();updateLaborIds();">✕</button>
+  `;
+  list.appendChild(div);
+  updateLaborIds();
+}
+
+function updateLaborIds() {
+  const ids = [];
+  document.querySelectorAll('#labor-list input[name^="labor_"]').forEach(inp => {
+    ids.push(inp.name.replace('labor_', ''));
   });
-  document.getElementById('total_workers').value = total;
+  document.getElementById('labor-ids').value = ids.join(',');
+}
+
+function addMachinery() {
+  const sel = document.getElementById('machinery-select');
+  const hours = document.getElementById('machinery-hours').value;
+  if (!sel.value || !hours) { alert('Chọn máy móc và nhập số giờ'); return; }
+  addMachineryRow(sel.value, hours, false);
+  sel.value = '';
+  document.getElementById('machinery-hours').value = '';
+}
+
+function addMachineryRow(id, hours, isPrev) {
+  const sel = document.getElementById('machinery-select');
+  const opt = sel.querySelector(`option[value="${id}"]`);
+  const name = opt ? opt.dataset.name : id;
+  const unit = opt ? opt.dataset.unit : '';
+  const list = document.getElementById('machinery-list');
+  const div = document.createElement('div');
+  div.className = 'form-row';
+  div.style.marginBottom = '6px';
+  div.innerHTML = `
+    <span style="flex:2;">${name} (${unit})</span>
+    <input type="number" step="0.5" name="machinery_${id}" value="${hours}" min="0.5" style="flex:1;">
+    <button type="button" class="btn sm" style="color:var(--danger);" onclick="this.parentElement.remove();updateMachineryIds();">✕</button>
+  `;
+  list.appendChild(div);
+  updateMachineryIds();
+}
+
+function updateMachineryIds() {
+  const ids = [];
+  document.querySelectorAll('#machinery-list input[name^="machinery_"]').forEach(inp => {
+    ids.push(inp.name.replace('machinery_', ''));
+  });
+  document.getElementById('machinery-ids').value = ids.join(',');
+}
+
+function addPhotoInput() {
+  const container = document.getElementById('photo-inputs');
+  const div = document.createElement('div');
+  div.className = 'form-row';
+  div.style.marginBottom = '8px';
+  div.style.alignItems = 'center';
+  div.innerHTML = `
+    <input type="file" name="photos" accept="image/*" capture="environment" style="flex:2;">
+    <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:2;">
+  `;
+  container.appendChild(div);
 }
 
 function addTask() {
@@ -174,15 +264,34 @@ function addMaterial() {
   c.appendChild(div);
 }
 
-// Photo preview
-document.querySelector('input[name="photos"]').addEventListener('change', function(e) {
-  const grid = document.getElementById('photo-preview');
-  grid.innerHTML = '';
-  for (const f of e.target.files) {
-    const img = document.createElement('img');
-    img.src = URL.createObjectURL(f);
-    grid.appendChild(img);
+function loadWeather() {
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const r = await fetch(`/api/weather?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`);
+      const d = await r.json();
+      if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
+      document.getElementById('weather_desc').value = d.desc;
+    });
+  } else {
+    fetch('/api/weather').then(r=>r.json()).then(d => {
+      if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
+      document.getElementById('weather_desc').value = d.desc;
+    });
   }
+}
+window.addEventListener('load', loadWeather);
+
+// Auto-calc total workers
+function calcWorkers() {
+  let total = 0;
+  document.querySelectorAll('#labor-list input[name^="labor_"]').forEach(inp => {
+    total += parseInt(inp.value || 0);
+  });
+  const tw = document.getElementById('total_workers');
+  if (tw) tw.value = total;
+}
+document.addEventListener('input', (e) => {
+  if (e.target.name && e.target.name.startsWith('labor_')) calcWorkers();
 });
 </script>
 {% endblock %}
