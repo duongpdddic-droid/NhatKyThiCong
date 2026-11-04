@@ -207,10 +207,15 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         else:
             cur = c.execute("""INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
                              foreman, total_workers, notes, issues, issue_level, issue_status, created_by)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id""" if __import__("app.db", fromlist=["IS_PG"]).IS_PG else """INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
+                             foreman, total_workers, notes, issues, issue_level, issue_status, created_by)
                              VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                             (project_id, diary_date, weather_temp, weather_desc, foreman,
                              total_workers, notes, issues, issue_level, issue_status, user["id"]))
-            diary_id = cur.lastrowid
+            if __import__("app.db", fromlist=["IS_PG"]).IS_PG:
+                diary_id = cur.fetchone()["id"]
+            else:
+                diary_id = cur.lastrowid
 
         # Labor
         for key, val in form.items():
