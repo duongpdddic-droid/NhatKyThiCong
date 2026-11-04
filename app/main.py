@@ -16,7 +16,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from app.db import connect, init_db
+from app.db import connect, init_db, IS_PG
 from app.auth import (
     hash_password, verify_password, create_access_token,
     get_current_user, require_user, require_role,
@@ -275,10 +275,53 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
 
 # ── Weather API proxy ────────────────────────────────────────────────────────
 
+# ── Admin: Settings ───────────────────────────────────────────────────────────
+
+@app.get("/admin/settings", response_class=HTMLResponse)
+def admin_settings(request: Request, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        settings = {}
+        for r in c.execute("SELECT key, value FROM settings"):
+            settings[r["key"]] = r["value"]
+    finally:
+        c.close()
+    return templates.TemplateResponse(request, "admin_settings.html", {
+        "user": user, "settings": settings,
+    })
+
+
+@app.post("/admin/settings")
+def admin_settings_save(request: Request, user=Depends(require_role("admin")),
+                       openweather_api_key: str = Form(""),
+                       telegram_bot_token: str = Form("")):
+    c = connect()
+    try:
+        for key, val in [("openweather_api_key", openweather_api_key),
+                         ("telegram_bot_token", telegram_bot_token)]:
+            try:
+                c.execute("INSERT INTO settings (key, value) VALUES (?,?)", (key, val.strip()))
+            except Exception:
+                c.execute("UPDATE settings SET value=? WHERE key=?", (val.strip(), key))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/admin/settings", status_code=302)
+
+
 @app.get("/api/weather")
 async def weather_proxy(lat: float = 21.0, lon: float = 105.8):
     import httpx
+    # Read API key from settings DB first, then env
     api_key = os.getenv("OPENWEATHER_API_KEY", "")
+    try:
+        c = connect()
+        row = c.execute("SELECT value FROM settings WHERE key='openweather_api_key'").fetchone()
+        c.close()
+        if row and row["value"]:
+            api_key = row["value"]
+    except Exception:
+        pass
     if not api_key:
         return {"temp": None, "desc": "Chưa cấu hình API key", "icon": "🌤️"}
     url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=vi"
