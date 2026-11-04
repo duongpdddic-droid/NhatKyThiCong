@@ -358,7 +358,36 @@ def add_machinery(request: Request, user=Depends(require_role("admin")),
     return RedirectResponse(url="/admin/library", status_code=302)
 
 
-# ── Recipients ───────────────────────────────────────────────────────────────
+# ── Admin: Assign projects to user ───────────────────────────────────────────
+
+@app.get("/admin/users/{user_id}/projects", response_class=HTMLResponse)
+def admin_user_projects(request: Request, user_id: int, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        target = dict(c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+        projects = [dict(r) for r in c.execute("SELECT * FROM projects ORDER BY name")]
+        assigned = {r["project_id"] for r in c.execute(
+            "SELECT project_id FROM user_projects WHERE user_id=?", (user_id,))}
+    finally:
+        c.close()
+    return templates.TemplateResponse(request, "admin_user_projects.html", {
+        "user": user, "target": target, "projects": projects, "assigned": assigned,
+    })
+
+
+@app.post("/admin/users/{user_id}/projects")
+async def admin_user_projects_save(request: Request, user_id: int, user=Depends(require_role("admin"))):
+    form = await request.form()
+    selected = set(int(x) for x in form.getlist("project_ids"))
+    c = connect()
+    try:
+        c.execute("DELETE FROM user_projects WHERE user_id=?", (user_id,))
+        for pid in selected:
+            c.execute("INSERT INTO user_projects (user_id, project_id) VALUES (?,?)", (user_id, pid))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url=f"/admin/users/{user_id}/projects", status_code=302)
 
 @app.post("/projects/{project_id}/recipients/add")
 def add_recipient(request: Request, project_id: int, user=Depends(require_role("admin")),

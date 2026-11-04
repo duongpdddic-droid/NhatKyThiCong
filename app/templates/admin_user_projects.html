@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Gán dự án — {{ target.full_name }}{% endblock %}
+{% block content %}
+<h2>Gán dự án cho: {{ target.full_name }}</h2>
+<p style="color:var(--muted);font-size:13px;margin-bottom:12px;">Vai trò: {{ target.role }}</p>
+<form method="post" action="/admin/users/{{ target.id }}/projects">
+  <div class="section">
+    <h2>Chọn dự án</h2>
+    {% for p in projects %}
+    <label style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer;">
+      <input type="checkbox" name="project_ids" value="{{ p.id }}" {% if p.id in assigned %}checked{% endif %} style="width:18px;height:18px;">
+      <span>{{ p.name }}</span>
+      <span style="color:var(--muted);font-size:12px;">{{ p.address }}</span>
+    </label>
+    {% endfor %}
+  </div>
+  <button type="submit" class="btn primary full">Lưu</button>
+</form>
+<a href="/admin/users" class="btn sm" style="margin-top:12px;">← Quay lại</a>
+{% endblock %}
