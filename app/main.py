@@ -188,15 +188,11 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
     issues = form.get("issues", "")
     issue_level = form.get("issue_level", "none")
     issue_status = form.get("issue_status", "none")
-    # Auto-calculate total workers from labor entries
+    # Auto-calculate total workers from all labor_ fields
     total_workers = 0
-    labor_ids_str = form.get("labor_ids", "")
-    for lt_id_str in labor_ids_str.split(","):
-        lt_id_str = lt_id_str.strip()
-        if not lt_id_str:
-            continue
-        count = int(form.get(f"labor_{lt_id_str}", 0) or 0)
-        total_workers += count
+    for key, val in form.items():
+        if key.startswith("labor_"):
+            total_workers += int(val or 0)
 
     c = connect()
     try:
@@ -639,7 +635,8 @@ async def send_telegram(request: Request, project_id: int, diary_id: int, user=D
 
 @app.post("/projects/{project_id}/diary/{diary_id}/save")
 async def diary_edit_save(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
-    # Reuse the same save logic but update existing diary
+    import os as _os
+    _os.makedirs(str(__import__("pathlib").Path(__file__).parent.parent / "uploads"), exist_ok=True)
     form = await request.form()
     diary_date = form.get("date", "")
     weather_temp = form.get("weather_temp")
@@ -649,15 +646,11 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     issues = form.get("issues", "")
     issue_level = form.get("issue_level", "none")
     issue_status = form.get("issue_status", "none")
-    # Auto-calculate total workers from labor entries
+    # Auto-calculate total workers from all labor_ fields
     total_workers = 0
-    labor_ids_str = form.get("labor_ids", "")
-    for lt_id_str in labor_ids_str.split(","):
-        lt_id_str = lt_id_str.strip()
-        if not lt_id_str:
-            continue
-        count = int(form.get(f"labor_{lt_id_str}", 0) or 0)
-        total_workers += count
+    for key, val in form.items():
+        if key.startswith("labor_"):
+            total_workers += int(val or 0)
 
     c = connect()
     try:
@@ -715,7 +708,9 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             if f and f.filename:
                 ext = __import__("pathlib").Path(f.filename).suffix
                 fname = f"diary_{diary_id}_{len(__import__('os').listdir(str(__import__('pathlib').Path(__file__).parent.parent / 'uploads')))}{ext}"
-                fpath = __import__("pathlib").Path(__file__).parent.parent / "uploads" / fname
+                upload_dir = __import__("pathlib").Path(__file__).parent.parent / "uploads"
+                __import__("os").makedirs(str(upload_dir), exist_ok=True)
+                fpath = upload_dir / fname
                 file_content = await f.read()
                 with open(fpath, "wb") as fh:
                     fh.write(file_content)
