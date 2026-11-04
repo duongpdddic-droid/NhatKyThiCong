@@ -59,6 +59,10 @@ async def send_document(chat_id: str, doc_path: str, caption: str = ""):
 
 
 async def send_diary_report(project_id: int, diary_id: int):
+    token = get_bot_token()
+    if not token:
+        print("ERROR: No bot token configured")
+        return {"ok": False, "error": "Chưa cấu hình Bot Token"}
     c = connect()
     try:
         diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
@@ -70,12 +74,69 @@ async def send_diary_report(project_id: int, diary_id: int):
             """SELECT mt.name, dm.hours FROM diary_machinery dm
                JOIN machinery_types mt ON dm.machinery_type_id=mt.id WHERE dm.diary_id=?""", (diary_id,))]
         photos = [dict(r) for r in c.execute(
-            "SELECT filename FROM diary_photos WHERE diary_id=?", (diary_id,))]
+            "SELECT filename, caption FROM diary_photos WHERE diary_id=?", (diary_id,))]
+        # Get recipients with telegram_chat_id
         recipients = [dict(r) for r in c.execute(
-            "SELECT * FROM recipients WHERE project_id=? AND (frequency='daily' OR frequency='on_issue')",
+            "SELECT * FROM recipients WHERE project_id=? AND telegram_chat_id IS NOT NULL AND telegram_chat_id != ''",
             (project_id,))]
+        # Also get users assigned to this project with telegram_chat_id
+        users = [dict(r) for r in c.execute(
+            """SELECT u.* FROM users u JOIN user_projects up ON u.id=up.user_id
+               WHERE up.project_id=? AND u.telegram_chat_id IS NOT NULL AND u.telegram_chat_id != ''""",
+            (project_id,))]
+        # If admin, also include
+        admins = [dict(r) for r in c.execute(
+            "SELECT * FROM users WHERE role='admin' AND telegram_chat_id IS NOT NULL AND telegram_chat_id != ''")]
     finally:
         c.close()
+
+    # Collect all chat_ids to send to
+    chat_ids = set()
+    for r in recipients:
+        chat_ids.add(r["telegram_chat_id"])
+    for u in users:
+        chat_ids.add(u["telegram_chat_id"])
+    for a in admins:
+        chat_ids.add(a["telegram_chat_id"])
+
+    if not chat_ids:
+        print("ERROR: No recipients with telegram_chat_id")
+        return {"ok": False, "error": "Chưa có người nhận với Telegram Chat ID"}
+
+    # Build message
+    lines = [
+        f"📋 <b>Nhật ký thi công — {project['name']}</b>",
+        f"📅 Ngày: {diary['date']}",
+        f"🌤️ Thời tiết: {diary['weather_temp']}°C — {diary['weather_desc']}",
+        f"👷 Tổng nhân lực: {diary['total_workers']} người",
+        "",
+        "<b>Nhân lực:</b>",
+    ]
+    for l in labor:
+        if l["count"] > 0:
+            lines.append(f"  • {l['name']}: {l['count']} người")
+    lines.append("")
+    lines.append("<b>Máy móc:</b>")
+    for m in machinery:
+        if m["hours"] > 0:
+            lines.append(f"  • {m['name']}: {m['hours']} giờ")
+    if diary.get("notes"):
+        lines.append(f"\n📝 Ghi chú: {diary['notes']}")
+    if diary.get("issues") and diary["issues"].strip():
+        level = {"none": "", "low": "🟢", "medium": "🟡", "high": "🔴"}.get(diary.get("issue_level", "none"), "")
+        lines.append(f"\n⚠️ Vướng mắc {level}: {diary['issues']}")
+        lines.append(f"Kiến nghị: {diary.get('issue_status', '')}")
+    lines.append(f"\n📸 Ảnh: {len(photos)} ảnh")
+
+    msg = "\n".join(lines)
+    upload_dir = Path(__file__).parent.parent / "uploads"
+
+    for chat_id in chat_ids:
+        await send_message(chat_id, msg)
+        for p in photos[:10]:
+            await send_photo(chat_id, str(upload_dir / p["filename"]),
+                             caption=p.get("caption", ""))
+    return {"ok": True, "sent_to": len(chat_ids)}
 
     # Build message
     lines = [

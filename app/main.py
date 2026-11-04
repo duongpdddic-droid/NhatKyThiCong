@@ -577,6 +577,25 @@ def add_recipient(request: Request, project_id: int, user=Depends(require_role("
 
 # ── Change password ───────────────────────────────────────────────────────────
 
+@app.get("/my-settings", response_class=HTMLResponse)
+def my_settings_page(request: Request, user=Depends(require_user)):
+    return templates.TemplateResponse(request, "my_settings.html", {"user": user})
+
+
+@app.post("/my-settings")
+def my_settings_save(request: Request, user=Depends(require_user),
+                    telegram_chat_id: str = Form(""),
+                    phone: str = Form(""), email: str = Form("")):
+    c = connect()
+    try:
+        c.execute("UPDATE users SET telegram_chat_id=?, phone=?, email=? WHERE id=?",
+                  (telegram_chat_id.strip(), phone.strip(), email.strip(), user["id"]))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/my-settings", status_code=302)
+
+
 @app.get("/change-password", response_class=HTMLResponse)
 def change_password_page(request: Request, user=Depends(require_user)):
     return templates.TemplateResponse(request, "change_password.html", {"user": user})
@@ -611,8 +630,11 @@ def change_password(request: Request, user=Depends(require_user),
 @app.post("/projects/{project_id}/diary/{diary_id}/send-telegram")
 async def send_telegram(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
     from app.telegram_bot import send_diary_report
-    await send_diary_report(project_id, diary_id)
-    return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
+    result = await send_diary_report(project_id, diary_id)
+    if result and not result.get("ok"):
+        # Redirect with error message
+        return RedirectResponse(url=f"/projects/{project_id}?tg_error={result.get('error', 'Lỗi')}", status_code=302)
+    return RedirectResponse(url=f"/projects/{project_id}?tg_ok=1", status_code=302)
 
 
 @app.post("/projects/{project_id}/diary/{diary_id}/save")

@@ -2,7 +2,12 @@
 {% block title %}{{ project.name }}{% endblock %}
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-  <h2>{{ project.name }}</h2>
+  {% if request.query_params.get('tg_ok') %}
+<div class="alert" style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;">✅ Đã gửi báo cáo qua Telegram</div>
+{% endif %}
+{% if request.query_params.get('tg_error') %}
+<div class="alert error">❌ Telegram: {{ request.query_params.get('tg_error') }}</div>
+{% endif %}
   <a href="/projects/{{ project.id }}/diary/new" class="btn primary sm">+ Nhật ký</a>
 </div>
 <p style="color:var(--muted);font-size:13px;margin-bottom:12px;">{{ project.address }} | CĐT: {{ project.investor }}</p>
