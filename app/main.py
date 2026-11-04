@@ -78,15 +78,16 @@ def dashboard(request: Request, user=Depends(require_user)):
                 """SELECT p.* FROM projects p JOIN user_projects up ON p.id=up.project_id
                    WHERE up.user_id=? ORDER BY p.id DESC""", (user["id"],))]
         # Stats
-        n_diaries = c.execute("SELECT COUNT(*) FROM diaries").fetchone()[0]
+        n_diaries = c.execute("SELECT COUNT(*) AS cnt FROM diaries").fetchone()["cnt"]
         today = date.today().isoformat()
         has_today = False
         if projects:
-            has_today = c.execute(
-                "SELECT COUNT(*) FROM diaries WHERE date=? AND project_id IN ({})".format(
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM diaries WHERE date=? AND project_id IN ({})".format(
                     ",".join("?" * len(projects))),
                 [today] + [p["id"] for p in projects],
-            ).fetchone()[0] > 0
+            ).fetchone()
+            has_today = (row["n"] if row else 0) > 0
     finally:
         c.close()
     return templates.TemplateResponse(request, "dashboard.html", {
