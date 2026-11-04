@@ -177,6 +177,35 @@ def diary_new(request: Request, project_id: int, date_str: str = None, user=Depe
     })
 
 
+def _add_timemark(image_path, text):
+    """Add timestamp watermark to image using Pillow."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.open(image_path)
+        draw = ImageDraw.Draw(img)
+        # Try to load a font
+        font = None
+        for fp in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                   "C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/DejaVuSans.ttf"]:
+            if __import__("os").path.exists(fp):
+                font = ImageFont.truetype(fp, 24)
+                break
+        if font is None:
+            font = ImageFont.load_default()
+        # Position: bottom-right
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        x = img.width - tw - 20
+        y = img.height - th - 20
+        # Draw background
+        draw.rectangle([x - 5, y - 5, x + tw + 5, y + th + 5], fill=(0, 0, 0, 128))
+        draw.text((x, y), text, fill=(255, 255, 255), font=font)
+        img.save(image_path)
+    except Exception as e:
+        print("Timemark error:", e)
+
+
 @app.post("/projects/{project_id}/diary/save")
 async def diary_save(request: Request, project_id: int, user=Depends(require_user)):
     form = await request.form()
@@ -280,6 +309,10 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                 file_content = await f.read()
                 with open(fpath, "wb") as fh:
                     fh.write(file_content)
+                # Add timemark
+                from datetime import datetime
+                stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+                _add_timemark(str(fpath), stamp)
                 caption = captions[i] if i < len(captions) else ""
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
@@ -720,6 +753,9 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                 file_content = await f.read()
                 with open(fpath, "wb") as fh:
                     fh.write(file_content)
+                from datetime import datetime
+                stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+                _add_timemark(str(fpath), stamp)
                 caption = captions[i] if i < len(captions) else ""
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
