@@ -188,7 +188,15 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
     issues = form.get("issues", "")
     issue_level = form.get("issue_level", "none")
     issue_status = form.get("issue_status", "none")
-    total_workers = int(form.get("total_workers", 0) or 0)
+    # Auto-calculate total workers from labor entries
+    total_workers = 0
+    labor_ids_str = form.get("labor_ids", "")
+    for lt_id_str in labor_ids_str.split(","):
+        lt_id_str = lt_id_str.strip()
+        if not lt_id_str:
+            continue
+        count = int(form.get(f"labor_{lt_id_str}", 0) or 0)
+        total_workers += count
 
     c = connect()
     try:
@@ -619,7 +627,15 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     issues = form.get("issues", "")
     issue_level = form.get("issue_level", "none")
     issue_status = form.get("issue_status", "none")
-    total_workers = int(form.get("total_workers", 0) or 0)
+    # Auto-calculate total workers from labor entries
+    total_workers = 0
+    labor_ids_str = form.get("labor_ids", "")
+    for lt_id_str in labor_ids_str.split(","):
+        lt_id_str = lt_id_str.strip()
+        if not lt_id_str:
+            continue
+        count = int(form.get(f"labor_{lt_id_str}", 0) or 0)
+        total_workers += count
 
     c = connect()
     try:
