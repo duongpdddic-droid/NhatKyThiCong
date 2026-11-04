@@ -375,7 +375,38 @@ def add_recipient(request: Request, project_id: int, user=Depends(require_role("
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
 
 
-# ── Telegram send (manual trigger) ───────────────────────────────────────────
+# ── Change password ───────────────────────────────────────────────────────────
+
+@app.get("/change-password", response_class=HTMLResponse)
+def change_password_page(request: Request, user=Depends(require_user)):
+    return templates.TemplateResponse(request, "change_password.html", {"user": user})
+
+
+@app.post("/change-password")
+def change_password(request: Request, user=Depends(require_user),
+                    old_password: str = Form(...), new_password: str = Form(...),
+                    confirm: str = Form(...)):
+    if new_password != confirm:
+        return templates.TemplateResponse(request, "change_password.html",
+                                         {"user": user, "error": "Mật khẩu xác nhận không khớp"})
+    if len(new_password) < 6:
+        return templates.TemplateResponse(request, "change_password.html",
+                                         {"user": user, "error": "Mật khẩu mới phải ≥ 6 ký tự"})
+    c = connect()
+    try:
+        row = c.execute("SELECT password_hash FROM users WHERE id=?", (user["id"],)).fetchone()
+        if not row or not verify_password(old_password, row["password_hash"]):
+            return templates.TemplateResponse(request, "change_password.html",
+                                             {"user": user, "error": "Mật khẩu cũ sai"})
+        c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                  (hash_password(new_password), user["id"]))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/", status_code=302)
+
+
+# ── Telegram send (manual trigger) ────────────────────────────────────────────
 
 @app.post("/projects/{project_id}/diary/{diary_id}/send-telegram")
 async def send_telegram(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
