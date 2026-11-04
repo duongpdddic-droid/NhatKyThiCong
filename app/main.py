@@ -191,8 +191,11 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
     # Auto-calculate total workers from all labor_ fields
     total_workers = 0
     for key, val in form.items():
-        if key.startswith("labor_"):
-            total_workers += int(val or 0)
+        if key.startswith("labor_") and key != "labor_ids":
+            try:
+                total_workers += int(val or 0)
+            except ValueError:
+                pass
 
     c = connect()
     try:
@@ -649,8 +652,11 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     # Auto-calculate total workers from all labor_ fields
     total_workers = 0
     for key, val in form.items():
-        if key.startswith("labor_"):
-            total_workers += int(val or 0)
+        if key.startswith("labor_") and key != "labor_ids":
+            try:
+                total_workers += int(val or 0)
+            except ValueError:
+                pass
 
     c = connect()
     try:
