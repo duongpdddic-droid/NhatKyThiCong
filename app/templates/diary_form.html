@@ -51,7 +51,7 @@
         {% endfor %}
       </select>
       <input type="number" id="labor-count" placeholder="Số người" min="1" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
-      <button type="button" class="btn sm primary" onclick="addLabor()">+ Thêm</button>
+      <button type="button" class="btn sm primary" onclick="event.preventDefault(); addLabor(); return false;">+ Thêm</button>
     </div>
     <div id="labor-list"></div>
     <input type="hidden" name="labor_ids" id="labor-ids">
@@ -67,7 +67,7 @@
         {% endfor %}
       </select>
       <input type="number" step="0.5" id="machinery-hours" placeholder="Số giờ" min="0.5" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
-      <button type="button" class="btn sm primary" onclick="addMachinery()">+ Thêm</button>
+      <button type="button" class="btn sm primary" onclick="event.preventDefault(); addMachinery(); return false;">+ Thêm</button>
     </div>
     <div id="machinery-list"></div>
     <input type="hidden" name="machinery_ids" id="machinery-ids">
@@ -106,7 +106,7 @@
         <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:2;">
       </div>
     </div>
-    <button type="button" class="btn sm" onclick="addPhotoInput()">+ Thêm ảnh</button>
+    <button type="button" class="btn sm" onclick="event.preventDefault(); addPhotoInput(); return false;">+ Thêm ảnh</button>
     <div class="photo-grid" id="photo-preview"></div>
   </div>
 
@@ -157,7 +157,9 @@ Object.entries(prevMachinery).forEach(([id, hours]) => {
 
 function addLabor() {
   const sel = document.getElementById('labor-select');
-  const count = document.getElementById('labor-count').value;
+  const countInput = document.getElementById('labor-count');
+  countInput.blur();
+  const count = countInput.value;
   if (!sel.value || !count) { alert('Chọn loại thợ và nhập số lượng'); return; }
   addLaborRow(sel.value, count, false);
   sel.value = '';
@@ -191,7 +193,9 @@ function updateLaborIds() {
 
 function addMachinery() {
   const sel = document.getElementById('machinery-select');
-  const hours = document.getElementById('machinery-hours').value;
+  const hoursInput = document.getElementById('machinery-hours');
+  hoursInput.blur();
+  const hours = hoursInput.value;
   if (!sel.value || !hours) { alert('Chọn máy móc và nhập số giờ'); return; }
   addMachineryRow(sel.value, hours, false);
   sel.value = '';
