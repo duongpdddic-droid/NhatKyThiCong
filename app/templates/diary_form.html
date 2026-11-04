@@ -102,7 +102,9 @@
     {% endif %}
     <div id="photo-inputs">
       <div class="form-row" style="margin-bottom:8px;align-items:center;">
-        <input type="file" name="photos" style="flex:2;">
+        <input type="file" name="photos" id="photo-file-0" accept="image/*" style="display:none;">
+        <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-0').removeAttribute('capture'); document.getElementById('photo-file-0').click();">📁 Thư viện</button>
+        <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-0').setAttribute('capture','environment'); document.getElementById('photo-file-0').click();">📷 Chụp ảnh</button>
         <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:2;">
       </div>
     </div>
@@ -230,12 +232,15 @@ function updateMachineryIds() {
 
 function addPhotoInput() {
   const container = document.getElementById('photo-inputs');
+  const idx = container.children.length;
   const div = document.createElement('div');
   div.className = 'form-row';
   div.style.marginBottom = '8px';
   div.style.alignItems = 'center';
   div.innerHTML = `
-    <input type="file" name="photos" style="flex:2;">
+    <input type="file" name="photos" id="photo-file-${idx}" accept="image/*" style="display:none;">
+    <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-${idx}').removeAttribute('capture'); document.getElementById('photo-file-${idx}').click();">📁 Thư viện</button>
+    <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-${idx}').setAttribute('capture','environment'); document.getElementById('photo-file-${idx}').click();">📷 Chụp ảnh</button>
     <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:2;">
   `;
   container.appendChild(div);
