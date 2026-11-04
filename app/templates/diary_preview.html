@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Xem trước — {{ project.name }}{% endblock %}
+{% block content %}
+<div style="max-width:800px;margin:0 auto;">
+  <h2 style="text-align:center;">NHẬT KÝ THI CÔNG</h2>
+  <p><strong>Dự án:</strong> {{ project.name }}</p>
+  <p><strong>Địa chỉ:</strong> {{ project.address }} | <strong>CDT:</strong> {{ project.investor }} | <strong>TVGS:</strong> {{ project.supervisor }}</p>
+  <hr>
+  <table style="width:100%;border-collapse:collapse;margin:12px 0;">
+    <tr><td style="padding:4px;font-weight:600;width:25%;">Ngày</td><td style="padding:4px;">{{ diary.date }}</td>
+        <td style="padding:4px;font-weight:600;width:25%;">Thời tiết</td><td style="padding:4px;">{{ diary.weather_temp }}°C — {{ diary.weather_desc }}</td></tr>
+    <tr><td style="padding:4px;font-weight:600;">Chỉ huy</td><td style="padding:4px;">{{ diary.foreman }}</td>
+        <td style="padding:4px;font-weight:600;">Tổng NL</td><td style="padding:4px;">{{ diary.total_workers }} người</td></tr>
+  </table>
+
+  <h3>1. Nhân lực</h3>
+  <table style="width:100%;border-collapse:collapse;">
+    <tr style="background:#f1f5f9;"><th style="padding:6px;text-align:left;">Loại thợ</th><th style="padding:6px;text-align:right;">Số lượng</th></tr>
+    {% for l in labor %}{% if l.count > 0 %}
+    <tr><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ l.name }}</td><td style="padding:6px;text-align:right;border-bottom:1px solid #e2e8f0;">{{ l.count }}</td></tr>
+    {% endif %}{% endfor %}
+  </table>
+
+  <h3>2. Máy móc</h3>
+  <table style="width:100%;border-collapse:collapse;">
+    <tr style="background:#f1f5f9;"><th style="padding:6px;text-align:left;">Máy móc</th><th style="padding:6px;text-align:right;">Số giờ</th></tr>
+    {% for m in machinery %}{% if m.hours > 0 %}
+    <tr><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ m.name }}</td><td style="padding:6px;text-align:right;border-bottom:1px solid #e2e8f0;">{{ m.hours }}</td></tr>
+    {% endif %}{% endfor %}
+  </table>
+
+  {% if materials %}
+  <h3>3. Vật tư nhập</h3>
+  <table style="width:100%;border-collapse:collapse;">
+    <tr style="background:#f1f5f9;"><th style="padding:6px;">Vật tư</th><th style="padding:6px;">ĐVT</th><th style="padding:6px;">KL</th></tr>
+    {% for m in materials %}
+    <tr><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ m.name }}</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ m.unit }}</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ m.quantity }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if tasks %}
+  <h3>4. Công việc thực hiện</h3>
+  <table style="width:100%;border-collapse:collapse;">
+    <tr style="background:#f1f5f9;"><th style="padding:6px;">Công việc</th><th style="padding:6px;">KL</th><th style="padding:6px;">ĐVT</th><th style="padding:6px;">% lũy kế</th></tr>
+    {% for t in tasks %}
+    <tr><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ t.task_name }}</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ t.quantity }}</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ t.unit }}</td><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ t.cumulative_pct }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if diary.notes %}
+  <h3>5. Ghi chú</h3>
+  <p>{{ diary.notes }}</p>
+  {% endif %}
+
+  {% if diary.issues %}
+  <h3>6. Vướng mắc & Kiến nghị</h3>
+  <p><strong>Mức độ:</strong> {{ diary.issue_level }} | <strong>Vướng mắc:</strong> {{ diary.issues }}</p>
+  <p><strong>Kiến nghị:</strong> {{ diary.issue_status }}</p>
+  {% endif %}
+
+  {% if photos %}
+  <h3>7. Ảnh hiện trường</h3>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+    {% for p in photos %}
+    <div>
+      <img src="/uploads/{{ p.filename }}" style="width:100%;border-radius:8px;">
+      <div style="font-size:11px;color:var(--muted);">{{ p.caption or '' }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div style="margin-top:20px;display:flex;gap:8px;justify-content:center;">
+    <a href="/projects/{{ project.id }}/diary/{{ diary.id }}/pdf" class="btn primary">📄 Xuất PDF</a>
+    <a href="/projects/{{ project.id }}" class="btn">← Quay lại</a>
+  </div>
+</div>
+{% endblock %}

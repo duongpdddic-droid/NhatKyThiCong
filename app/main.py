@@ -706,6 +706,30 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
 
+@app.get("/projects/{project_id}/diary/{diary_id}/preview", response_class=HTMLResponse)
+def diary_preview(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+    c = connect()
+    try:
+        diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
+        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+        labor = [dict(r) for r in c.execute(
+            """SELECT lt.name, dl.count FROM diary_labor dl
+               JOIN labor_types lt ON dl.labor_type_id=lt.id WHERE dl.diary_id=?""", (diary_id,))]
+        machinery = [dict(r) for r in c.execute(
+            """SELECT mt.name, dm.hours FROM diary_machinery dm
+               JOIN machinery_types mt ON dm.machinery_type_id=mt.id WHERE dm.diary_id=?""", (diary_id,))]
+        materials = [dict(r) for r in c.execute("SELECT * FROM diary_materials WHERE diary_id=?", (diary_id,))]
+        tasks = [dict(r) for r in c.execute("SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
+        photos = [dict(r) for r in c.execute("SELECT * FROM diary_photos WHERE diary_id=?", (diary_id,))]
+    finally:
+        c.close()
+    return templates.TemplateResponse(request, "diary_preview.html", {
+        "user": user, "project": project, "diary": diary,
+        "labor": labor, "machinery": machinery, "materials": materials,
+        "tasks": tasks, "photos": photos,
+    })
+
+
 @app.get("/projects/{project_id}/diary/{diary_id}/pdf")
 def diary_pdf(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
     from app.export_pdf import generate_diary_pdf

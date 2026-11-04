@@ -6,10 +6,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.db import connect
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+def get_bot_token():
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            from app.db import connect
+            c = connect()
+            row = c.execute("SELECT value FROM settings WHERE key='telegram_bot_token'").fetchone()
+            c.close()
+            if row and row["value"]:
+                token = row["value"]
+        except Exception:
+            pass
+    return token
+
+BOT_TOKEN = get_bot_token()
 
 
 async def send_message(chat_id: str, text: str):
+    BOT_TOKEN = get_bot_token()
     if not BOT_TOKEN or not chat_id:
         return
     import httpx
@@ -19,6 +35,7 @@ async def send_message(chat_id: str, text: str):
 
 
 async def send_photo(chat_id: str, photo_path: str, caption: str = ""):
+    BOT_TOKEN = get_bot_token()
     if not BOT_TOKEN or not chat_id:
         return
     import httpx
@@ -30,6 +47,7 @@ async def send_photo(chat_id: str, photo_path: str, caption: str = ""):
 
 
 async def send_document(chat_id: str, doc_path: str, caption: str = ""):
+    BOT_TOKEN = get_bot_token()
     if not BOT_TOKEN or not chat_id:
         return
     import httpx

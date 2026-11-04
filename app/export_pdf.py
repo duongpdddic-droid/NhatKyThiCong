@@ -13,6 +13,22 @@ EXPORT_DIR.mkdir(exist_ok=True)
 
 def generate_diary_pdf(project_id: int, diary_id: int) -> str:
     from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import os
+    # Register Vietnamese font
+    font_name = "DejaVuSans"
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:/Windows/Fonts/DejaVuSans.ttf",
+        os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf"),
+    ]
+    for fp in font_paths:
+        if os.path.exists(fp):
+            pdfmetrics.registerFont(TTFont(font_name, fp))
+            break
+    else:
+        font_name = "Helvetica"  # fallback
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -42,9 +58,8 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
 
     doc = SimpleDocTemplate(str(filepath), pagesize=A4, topMargin=1.5*cm, bottomMargin=1.5*cm)
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=14, spaceAfter=6)
-    h2_style = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=12, spaceBefore=10, spaceAfter=4)
     normal = styles["Normal"]
+    normal.fontName = font_name
 
     story = []
     story.append(Paragraph("NHẬT KÝ THI CÔNG", title_style))
