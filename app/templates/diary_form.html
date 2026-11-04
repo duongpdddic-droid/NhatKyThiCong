@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Nhật ký — {{ project.name }}{% endblock %}
 {% block content %}
+{% if diary_id %}
+<form method="post" action="/projects/{{ project.id }}/diary/{{ diary_id }}/save" enctype="multipart/form-data">
+{% else %}
 <form method="post" action="/projects/{{ project.id }}/diary/save" enctype="multipart/form-data">
+{% endif %}
   <input type="hidden" name="date" value="{{ target_date }}">
 
   <div class="section">

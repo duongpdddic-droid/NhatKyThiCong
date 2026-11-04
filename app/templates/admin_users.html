@@ -33,7 +33,14 @@
 <div class="card" style="padding:8px 12px;margin-bottom:6px;">
   <strong>{{ u.full_name }}</strong> ({{ u.username }}) — <span class="badge info">{{ u.role }}</span>
   <div style="font-size:12px;color:var(--muted);">{{ u.phone }} | {{ u.email }} | TG: {{ u.telegram_chat_id }}</div>
-  <a href="/admin/users/{{ u.id }}/projects" class="btn sm" style="margin-top:4px;">📁 Gán dự án</a>
+  <div style="margin-top:4px;display:flex;gap:8px;">
+    <a href="/admin/users/{{ u.id }}/projects" class="btn sm">📁 Gán dự án</a>
+    {% if u.id != user.id %}
+    <form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline;" onsubmit="return confirm('Xóa user này?')">
+      <button type="submit" class="btn sm" style="color:var(--danger);">🗑️ Xóa</button>
+    </form>
+    {% endif %}
+  </div>
 </div>
 {% endfor %}
 <a href="/admin/library" class="btn sm">📚 Thư viện</a>

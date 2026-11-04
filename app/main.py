@@ -389,6 +389,86 @@ async def admin_user_projects_save(request: Request, user_id: int, user=Depends(
         c.close()
     return RedirectResponse(url=f"/admin/users/{user_id}/projects", status_code=302)
 
+# ── CRUD: Edit Diary ──────────────────────────────────────────────────────────
+
+@app.get("/projects/{project_id}/diary/{diary_id}/edit", response_class=HTMLResponse)
+def diary_edit(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+    c = connect()
+    try:
+        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+        diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
+        labor_types = [dict(r) for r in c.execute("SELECT * FROM labor_types ORDER BY sort_order")]
+        machinery_types = [dict(r) for r in c.execute("SELECT * FROM machinery_types ORDER BY sort_order")]
+        existing_labor = {r["labor_type_id"]: r["count"] for r in c.execute(
+            "SELECT * FROM diary_labor WHERE diary_id=?", (diary_id,))}
+        existing_machinery = {r["machinery_type_id"]: r["hours"] for r in c.execute(
+            "SELECT * FROM diary_machinery WHERE diary_id=?", (diary_id,))}
+        materials = [dict(r) for r in c.execute("SELECT * FROM diary_materials WHERE diary_id=?", (diary_id,))]
+        tasks = [dict(r) for r in c.execute("SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
+        photos = [dict(r) for r in c.execute("SELECT * FROM diary_photos WHERE diary_id=?", (diary_id,))]
+    finally:
+        c.close()
+    return templates.TemplateResponse(request, "diary_form.html", {
+        "user": user, "project": project, "target_date": diary["date"],
+        "labor_types": labor_types, "machinery_types": machinery_types,
+        "prev_labor": existing_labor, "prev_machinery": existing_machinery,
+        "prev_materials": materials, "prev_photos": photos,
+        "diary": diary, "diary_id": diary_id, "existing_tasks": tasks,
+    })
+
+
+@app.post("/projects/{project_id}/diary/{diary_id}/delete")
+def diary_delete(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+    c = connect()
+    try:
+        c.execute("DELETE FROM diaries WHERE id=?", (diary_id,))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
+
+
+# ── CRUD: Delete Project ─────────────────────────────────────────────────────
+
+@app.post("/projects/{project_id}/delete")
+def project_delete(request: Request, project_id: int, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        c.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/", status_code=302)
+
+
+# ── CRUD: Delete User ────────────────────────────────────────────────────────
+
+@app.post("/admin/users/{user_id}/delete")
+def admin_user_delete(request: Request, user_id: int, user=Depends(require_role("admin"))):
+    if user_id == user["id"]:
+        return RedirectResponse(url="/admin/users", status_code=302)
+    c = connect()
+    try:
+        c.execute("DELETE FROM users WHERE id=?", (user_id,))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/admin/users", status_code=302)
+
+
+# ── CRUD: Delete Recipient ───────────────────────────────────────────────────
+
+@app.post("/projects/{project_id}/recipients/{recipient_id}/delete")
+def recipient_delete(request: Request, project_id: int, recipient_id: int, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        c.execute("DELETE FROM recipients WHERE id=?", (recipient_id,))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
+
+
 @app.post("/projects/{project_id}/recipients/add")
 def add_recipient(request: Request, project_id: int, user=Depends(require_role("admin")),
                   name: str = Form(...), email: str = Form(""), phone: str = Form(""),
@@ -444,7 +524,79 @@ async def send_telegram(request: Request, project_id: int, diary_id: int, user=D
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
 
 
-# ── PDF Export ───────────────────────────────────────────────────────────────
+@app.post("/projects/{project_id}/diary/{diary_id}/save")
+async def diary_edit_save(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+    # Reuse the same save logic but update existing diary
+    form = await request.form()
+    diary_date = form.get("date", "")
+    weather_temp = form.get("weather_temp")
+    weather_desc = form.get("weather_desc")
+    foreman = form.get("foreman", "")
+    notes = form.get("notes", "")
+    issues = form.get("issues", "")
+    issue_level = form.get("issue_level", "none")
+    issue_status = form.get("issue_status", "none")
+    total_workers = int(form.get("total_workers", 0) or 0)
+
+    c = connect()
+    try:
+        c.execute("""UPDATE diaries SET date=?, weather_temp=?, weather_desc=?, foreman=?,
+                     total_workers=?, notes=?, issues=?, issue_level=?, issue_status=?,
+                     updated_at=datetime('now') WHERE id=?""",
+                  (diary_date, weather_temp, weather_desc, foreman, total_workers, notes,
+                   issues, issue_level, issue_status, diary_id))
+        for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
+            c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
+
+        for key, val in form.items():
+            if key.startswith("labor_"):
+                lt_id = int(key.split("_")[1])
+                count = int(val or 0)
+                if count > 0:
+                    c.execute("INSERT INTO diary_labor (diary_id, labor_type_id, count) VALUES (?,?,?)",
+                              (diary_id, lt_id, count))
+        for key, val in form.items():
+            if key.startswith("machinery_"):
+                mt_id = int(key.split("_")[1])
+                hours = float(val or 0)
+                if hours > 0:
+                    c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
+                              (diary_id, mt_id, hours))
+        mat_names = form.getlist("mat_name")
+        mat_units = form.getlist("mat_unit")
+        mat_qtys = form.getlist("mat_qty")
+        for i, name in enumerate(mat_names):
+            if name.strip():
+                c.execute("INSERT INTO diary_materials (diary_id, name, unit, quantity) VALUES (?,?,?,?)",
+                          (diary_id, name, mat_units[i] if i < len(mat_units) else "",
+                           float(mat_qtys[i] or 0) if i < len(mat_qtys) else 0))
+        task_names = form.getlist("task_name")
+        task_qtys = form.getlist("task_qty")
+        task_units = form.getlist("task_unit")
+        task_pcts = form.getlist("task_pct")
+        for i, name in enumerate(task_names):
+            if name.strip():
+                c.execute("INSERT INTO diary_tasks (diary_id, task_name, quantity, unit, cumulative_pct) VALUES (?,?,?,?,?)",
+                          (diary_id, name,
+                           float(task_qtys[i] or 0) if i < len(task_qtys) else 0,
+                           task_units[i] if i < len(task_units) else "",
+                           float(task_pcts[i] or 0) if i < len(task_pcts) else 0))
+
+        files = form.getlist("photos")
+        for f in files:
+            if f and f.filename:
+                ext = __import__("pathlib").Path(f.filename).suffix
+                fname = f"diary_{diary_id}_{len(__import__('os').listdir(str(__import__('pathlib').Path(__file__).parent.parent / 'uploads')))}{ext}"
+                fpath = __import__("pathlib").Path(__file__).parent.parent / "uploads" / fname
+                content = await f.read()
+                with open(fpath, "wb") as fh:
+                    fh.write(content)
+                c.execute("INSERT INTO diary_photos (diary_id, filename) VALUES (?,?)", (diary_id, fname))
+
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
 
 @app.get("/projects/{project_id}/diary/{diary_id}/pdf")
 def diary_pdf(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):

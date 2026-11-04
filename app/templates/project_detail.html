@@ -16,10 +16,14 @@
     👷 {{ d.total_workers }} người
     {% if d.issues %}<br>⚠️ {{ d.issues[:80] }}{% endif %}
   </div>
-  <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+    <a href="/projects/{{ project.id }}/diary/{{ d.id }}/edit" class="btn sm">✏️ Sửa</a>
     <a href="/projects/{{ project.id }}/diary/{{ d.id }}/pdf" class="btn sm">📄 PDF</a>
     <form method="post" action="/projects/{{ project.id }}/diary/{{ d.id }}/send-telegram" style="display:inline;">
       <button type="submit" class="btn sm">📱 Telegram</button>
+    </form>
+    <form method="post" action="/projects/{{ project.id }}/diary/{{ d.id }}/delete" style="display:inline;" onsubmit="return confirm('Xóa nhật ký này?')">
+      <button type="submit" class="btn sm" style="color:var(--danger);">🗑️ Xóa</button>
     </form>
   </div>
 </div>
@@ -30,17 +34,27 @@
 {% if recipients %}
 <h3 style="margin:16px 0 8px;">Người nhận báo cáo</h3>
 {% for r in recipients %}
-<div class="card" style="padding:8px 12px;margin-bottom:6px;font-size:13px;">
-  {{ r.name }} ({{ r.role }}) — {{ r.frequency }}
+<div class="card" style="padding:8px 12px;margin-bottom:6px;font-size:13px;display:flex;justify-content:space-between;align-items:center;">
+  <div>{{ r.name }} ({{ r.role }}) — {{ r.frequency }}
   {% if r.telegram_chat_id %}📱{% endif %}
-  {% if r.email %}✉️{% endif %}
+  {% if r.email %}✉️{% endif %}</div>
+  {% if user.role == 'admin' %}
+  <form method="post" action="/projects/{{ project.id }}/recipients/{{ r.id }}/delete" style="display:inline;" onsubmit="return confirm('Xóa người nhận này?')">
+    <button type="submit" class="btn sm" style="color:var(--danger);">🗑️</button>
+  </form>
+  {% endif %}
 </div>
 {% endfor %}
 {% endif %}
 
 {% if user.role == 'admin' %}
+<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+  <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('Xóa dự án này và toàn bộ nhật ký?')">
+    <button type="submit" class="btn sm" style="color:var(--danger);">🗑️ Xóa dự án</button>
+  </form>
+</div>
+
 <div class="section" style="margin-top:16px;">
-  <h2>Thêm người nhận báo cáo</h2>
   <form method="post" action="/projects/{{ project.id }}/recipients/add">
     <div class="form-group"><input type="text" name="name" placeholder="Tên" required></div>
     <div class="form-row">
