@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Đăng nhập{% endblock %}
+{% block content %}
+<div class="login-box">
+  <h1>📋 Nhật ký thi công</h1>
+  <p class="subtitle">Đăng nhập để tiếp tục</p>
+  {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+  <form method="post" action="/login">
+    <label>Tài khoản</label>
+    <input type="text" name="username" required autofocus>
+    <label>Mật khẩu</label>
+    <input type="password" name="password" required>
+    <button type="submit" class="btn primary full">Đăng nhập</button>
+  </form>
+  <p class="hint">Mặc định: admin / admin123</p>
+</div>
+{% endblock %}

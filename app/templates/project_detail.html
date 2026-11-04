@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }}{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+  <h2>{{ project.name }}</h2>
+  <a href="/projects/{{ project.id }}/diary/new" class="btn primary sm">+ Nhật ký</a>
+</div>
+<p style="color:var(--muted);font-size:13px;margin-bottom:12px;">{{ project.address }} | CĐT: {{ project.investor }}</p>
+
+<h3 style="margin-bottom:8px;">Nhật ký thi công</h3>
+{% for d in diaries %}
+<div class="diary-item {% if d.issue_level == 'high' %}issue-high{% elif d.issue_level == 'medium' %}issue-medium{% elif d.issue_level == 'low' %}issue-low{% endif %}">
+  <div class="date">📅 {{ d.date }}</div>
+  <div class="meta">
+    🌤️ {{ d.weather_temp }}°C — {{ d.weather_desc }} |
+    👷 {{ d.total_workers }} người
+    {% if d.issues %}<br>⚠️ {{ d.issues[:80] }}{% endif %}
+  </div>
+  <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+    <a href="/projects/{{ project.id }}/diary/{{ d.id }}/pdf" class="btn sm">📄 PDF</a>
+    <form method="post" action="/projects/{{ project.id }}/diary/{{ d.id }}/send-telegram" style="display:inline;">
+      <button type="submit" class="btn sm">📱 Telegram</button>
+    </form>
+  </div>
+</div>
+{% else %}
+<p style="color:var(--muted);text-align:center;padding:20px;">Chưa có nhật ký nào. Nhấn "+ Nhật ký" để bắt đầu.</p>
+{% endfor %}
+
+{% if recipients %}
+<h3 style="margin:16px 0 8px;">Người nhận báo cáo</h3>
+{% for r in recipients %}
+<div class="card" style="padding:8px 12px;margin-bottom:6px;font-size:13px;">
+  {{ r.name }} ({{ r.role }}) — {{ r.frequency }}
+  {% if r.telegram_chat_id %}📱{% endif %}
+  {% if r.email %}✉️{% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% if user.role == 'admin' %}
+<div class="section" style="margin-top:16px;">
+  <h2>Thêm người nhận báo cáo</h2>
+  <form method="post" action="/projects/{{ project.id }}/recipients/add">
+    <div class="form-group"><input type="text" name="name" placeholder="Tên" required></div>
+    <div class="form-row">
+      <div class="form-group"><input type="text" name="role" placeholder="Vai trò (CDT, TVGS...)"></div>
+      <div class="form-group"><input type="text" name="telegram_chat_id" placeholder="Telegram Chat ID"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><input type="email" name="email" placeholder="Email"></div>
+      <div class="form-group">
+        <select name="frequency">
+          <option value="daily">Hàng ngày</option>
+          <option value="weekly">Hàng tuần</option>
+          <option value="on_issue">Khi có sự cố</option>
+        </select>
+      </div>
+    </div>
+    <button type="submit" class="btn sm primary">Thêm</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

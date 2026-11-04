@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Trang chủ{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+  <h2>Dự án của tôi</h2>
+  {% if user.role == 'admin' %}
+  <a href="/projects/new" class="btn primary sm">+ Dự án</a>
+  {% endif %}
+</div>
+
+{% if not has_today and projects %}
+<div class="alert" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;">
+  ⚠️ Chưa làm nhật ký hôm nay
+</div>
+{% endif %}
+
+{% for p in projects %}
+<div class="project-card">
+  <h3>{{ p.name }}</h3>
+  <div class="meta">{{ p.address or '' }}</div>
+  <div class="stats-row">
+    <div class="stat-box"><div class="val">{{ p.start_date or '—' }}</div><div class="lbl">Bắt đầu</div></div>
+    <div class="stat-box"><div class="val">{{ p.end_date or '—' }}</div><div class="lbl">Kết thúc</div></div>
+  </div>
+  <div style="margin-top:10px;display:flex;gap:8px;">
+    <a href="/projects/{{ p.id }}" class="btn sm">Xem</a>
+    <a href="/projects/{{ p.id }}/diary/new" class="btn primary sm">+ Nhật ký</a>
+  </div>
+</div>
+{% endfor %}
+
+{% if user.role == 'admin' %}
+<div style="margin-top:16px;">
+  <a href="/admin/users" class="btn sm">👥 Quản lý User</a>
+  <a href="/admin/library" class="btn sm">📚 Thư viện</a>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: nhatky-thi-cong
+    env: docker
+    plan: free
+    healthCheckPath: /login
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false

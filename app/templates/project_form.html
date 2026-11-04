@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Dự án mới{% endblock %}
+{% block content %}
+<h2>Dự án mới</h2>
+<form method="post" action="/projects/new">
+  <div class="form-group"><label>Tên dự án</label><input type="text" name="name" required></div>
+  <div class="form-group"><label>Địa chỉ</label><input type="text" name="address"></div>
+  <div class="form-group"><label>Chủ đầu tư</label><input type="text" name="investor"></div>
+  <div class="form-group"><label>Nhà thầu</label><input type="text" name="contractor"></div>
+  <div class="form-group"><label>TVGS</label><input type="text" name="supervisor"></div>
+  <div class="form-row">
+    <div class="form-group"><label>Ngày bắt đầu</label><input type="date" name="start_date"></div>
+    <div class="form-group"><label>Ngày kết thúc</label><input type="date" name="end_date"></div>
+  </div>
+  <button type="submit" class="btn primary full">Tạo dự án</button>
+</form>
+{% endblock %}

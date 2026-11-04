@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Thư viện{% endblock %}
+{% block content %}
+<h2>Thư viện Nhân lực & Máy móc</h2>
+<a href="/admin/users" class="btn sm">👥 User</a>
+
+<div class="section">
+  <h2>Nhân lực</h2>
+  <form method="post" action="/admin/library/labor/add" style="display:flex;gap:8px;margin-bottom:12px;">
+    <input type="text" name="name" placeholder="Tên loại thợ" required style="flex:2;padding:8px;border:1px solid var(--border);border-radius:8px;">
+    <input type="text" name="unit" value="người" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
+    <button type="submit" class="btn sm primary">+</button>
+  </form>
+  {% for l in labor %}
+  <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px;">{{ l.name }} ({{ l.unit }})</div>
+  {% endfor %}
+</div>
+
+<div class="section">
+  <h2>Máy móc</h2>
+  <form method="post" action="/admin/library/machinery/add" style="display:flex;gap:8px;margin-bottom:12px;">
+    <input type="text" name="name" placeholder="Tên máy móc" required style="flex:2;padding:8px;border:1px solid var(--border);border-radius:8px;">
+    <input type="text" name="unit" value="giờ" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
+    <button type="submit" class="btn sm primary">+</button>
+  </form>
+  {% for m in machinery %}
+  <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px;">{{ m.name }} ({{ m.unit }})</div>
+  {% endfor %}
+</div>
+{% endblock %}
