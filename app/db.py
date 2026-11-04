@@ -235,13 +235,16 @@ def init_db():
                 c.execute("INSERT OR IGNORE INTO machinery_types (name, unit, sort_order) VALUES (?,?,?)",
                           (name, unit, order))
         import hashlib
-        pw = hashlib.sha256("admin123".encode()).hexdigest()
-        if IS_PG:
-            c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",
-                      ("admin", pw, "Quản trị viên", "admin"))
-        else:
-            c.execute("INSERT OR IGNORE INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
-                      ("admin", pw, "Quản trị viên", "admin"))
+        # Only create admin if not exists (never overwrite password)
+        existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()
+        if not existing:
+            pw = hashlib.sha256("admin123".encode()).hexdigest()
+            if IS_PG:
+                c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (%s,%s,%s,%s)",
+                          ("admin", pw, "Quản trị viên", "admin"))
+            else:
+                c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
+                          ("admin", pw, "Quản trị viên", "admin"))
         c.commit()
     finally:
         c.close()
