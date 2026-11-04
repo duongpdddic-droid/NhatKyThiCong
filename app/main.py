@@ -162,8 +162,8 @@ def diary_new(request: Request, project_id: int, date_str: str = None, user=Depe
                 prev_machinery[r["machinery_type_id"]] = r["hours"]
             prev_materials = [dict(r) for r in c.execute(
                 "SELECT * FROM diary_materials WHERE diary_id=?", (prev["id"],))]
-            prev_photos = [dict(r) for r in c.execute(
-                "SELECT * FROM diary_photos WHERE diary_id=?", (prev["id"],))]
+            # Photos are NOT auto-filled from previous day
+            prev_photos = []
         else:
             prev_photos = []
     finally:
