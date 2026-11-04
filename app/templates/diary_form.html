@@ -109,6 +109,17 @@
       </div>
     </div>
     <button type="button" class="btn sm" onclick="event.preventDefault(); addPhotoInput(); return false;">+ Thêm ảnh</button>
+    {% if prev_photos %}
+    <p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">📋 Ảnh đã lưu:</p>
+    <div class="photo-grid" style="margin-bottom:12px;">
+      {% for p in prev_photos %}
+      <div>
+        <img src="/uploads/{{ p.filename }}" alt="saved">
+        <div style="font-size:10px;color:var(--muted);">{{ p.caption or '' }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     <div class="photo-grid" id="photo-preview"></div>
   </div>
 
@@ -272,6 +283,18 @@ function addMaterial() {
   `;
   c.appendChild(div);
 }
+
+// Photo preview on file select
+document.addEventListener('change', function(e) {
+  if (e.target.name === 'photos' && e.target.files && e.target.files.length > 0) {
+    const grid = document.getElementById('photo-preview');
+    for (const f of e.target.files) {
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(f);
+      grid.appendChild(img);
+    }
+  }
+});
 
 function loadWeather() {
   if (navigator.geolocation) {
