@@ -105,9 +105,24 @@
         <input type="file" name="photos" id="photo-file-0" accept="image/*" style="display:none;">
         <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-0').removeAttribute('capture'); document.getElementById('photo-file-0').click();">📁 Thư viện</button>
         <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-0').setAttribute('capture','environment'); document.getElementById('photo-file-0').click();">📷 Chụp ảnh</button>
+        <img id="photo-preview-0" style="width:60px;height:60px;object-fit:cover;border-radius:8px;display:none;">
         <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:2;">
       </div>
     </div>
+    <script>
+    (function() {
+      var input0 = document.getElementById('photo-file-0');
+      if (input0) {
+        input0.addEventListener('change', function(e) {
+          if (e.target.files && e.target.files[0]) {
+            var img = document.getElementById('photo-preview-0');
+            img.src = URL.createObjectURL(e.target.files[0]);
+            img.style.display = 'block';
+          }
+        });
+      }
+    })();
+    </script>
     <button type="button" class="btn sm" onclick="event.preventDefault(); addPhotoInput(); return false;">+ Thêm ảnh</button>
     {% if prev_photos %}
     <p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">📋 Ảnh đã lưu:</p>
@@ -249,11 +264,23 @@ function addPhotoInput() {
   div.style.marginBottom = '8px';
   div.style.alignItems = 'center';
   div.innerHTML = `
-    <input type="file" name="photos" id="photo-file-${idx}" accept="image/*" style="display:none;">
-    <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-${idx}').removeAttribute('capture'); document.getElementById('photo-file-${idx}').click();">📁 Thư viện</button>
-    <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-${idx}').setAttribute('capture','environment'); document.getElementById('photo-file-${idx}').click();">📷 Chụp ảnh</button>
-    <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:2;">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:100%;">
+      <input type="file" name="photos" id="photo-file-${idx}" accept="image/*" style="display:none;">
+      <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-${idx}').removeAttribute('capture'); document.getElementById('photo-file-${idx}').click();">📁 Thư viện</button>
+      <button type="button" class="btn sm" onclick="event.preventDefault(); document.getElementById('photo-file-${idx}').setAttribute('capture','environment'); document.getElementById('photo-file-${idx}').click();">📷 Chụp ảnh</button>
+      <img id="photo-preview-${idx}" style="width:60px;height:60px;object-fit:cover;border-radius:8px;display:none;">
+      <input type="text" name="photo_captions" placeholder="Mô tả ảnh" style="flex:1;min-width:120px;">
+    </div>
   `;
+  // Add preview handler
+  const input = div.querySelector('input[type="file"]');
+  input.addEventListener('change', function(e) {
+    if (e.target.files && e.target.files[0]) {
+      const img = div.querySelector('img');
+      img.src = URL.createObjectURL(e.target.files[0]);
+      img.style.display = 'block';
+    }
+  });
   container.appendChild(div);
 }
 
