@@ -320,6 +320,9 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                            task_units[i] if i < len(task_units) else "",
                            float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
 
+        # Capture existing photo IDs before inserting new ones
+        existing_photo_ids_before = [r["id"] for r in c.execute("SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,))]
+
         # Photos with captions
         files = form.getlist("photos")
         captions = form.getlist("photo_captions")
@@ -351,8 +354,7 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         existing_captions = form.getlist("existing_photo_captions")
         kept_ids = [int(pid) for pid in existing_ids if pid]
         # Delete photos not in kept list
-        all_photos = [r["id"] for r in c.execute("SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,))]
-        for pid in all_photos:
+        for pid in existing_photo_ids_before:
             if pid not in kept_ids:
                 # Also delete file
                 import os as _os
