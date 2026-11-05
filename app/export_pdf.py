@@ -60,6 +60,8 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
     styles = getSampleStyleSheet()
     normal = styles["Normal"]
     normal.fontName = font_name
+    title_style = ParagraphStyle("Title", parent=normal, fontSize=16, alignment=1, spaceAfter=6)
+    h2_style = ParagraphStyle("H2", parent=normal, fontSize=12, spaceBefore=8, spaceAfter=4)
 
     story = []
     story.append(Paragraph("NHẬT KÝ THI CÔNG", title_style))
