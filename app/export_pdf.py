@@ -21,6 +21,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
     font_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "C:/Windows/Fonts/DejaVuSans.ttf",
+        "C:/Windows/Fonts/arial.ttf",
         os.path.join(os.path.dirname(__file__), "DejaVuSans.ttf"),
     ]
     for fp in font_paths:
@@ -28,7 +29,11 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
             pdfmetrics.registerFont(TTFont(font_name, fp))
             break
     else:
-        font_name = "Helvetica"  # fallback
+        raise RuntimeError(
+            "No Vietnamese font found. Install DejaVu Sans "
+            "(apt install fonts-dejavu-core) or place DejaVuSans.ttf "
+            "next to export_pdf.py."
+        )
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -80,6 +85,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("BACKGROUND", (0, 0), (0, -1), colors.lightgrey),
         ("BACKGROUND", (2, 0), (2, -1), colors.lightgrey),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
     ]))
     story.append(t)
@@ -93,7 +99,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
             labor_data.append([l["name"], str(l["count"])])
     if len(labor_data) > 1:
         t = Table(labor_data, colWidths=[12*cm, 4*cm])
-        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTSIZE",(0,0),(-1,-1),9)]))
+        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTNAME",(0,0),(-1,-1),font_name), ("FONTSIZE",(0,0),(-1,-1),9)]))
         story.append(t)
 
     # Machinery
@@ -104,7 +110,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
             mach_data.append([m["name"], str(m["hours"])])
     if len(mach_data) > 1:
         t = Table(mach_data, colWidths=[12*cm, 4*cm])
-        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTSIZE",(0,0),(-1,-1),9)]))
+        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTNAME",(0,0),(-1,-1),font_name), ("FONTSIZE",(0,0),(-1,-1),9)]))
         story.append(t)
 
     # Materials
@@ -114,7 +120,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         for m in materials:
             mat_data.append([m["name"], m.get("unit", ""), str(m["quantity"])])
         t = Table(mat_data, colWidths=[8*cm, 3*cm, 5*cm])
-        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTSIZE",(0,0),(-1,-1),9)]))
+        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTNAME",(0,0),(-1,-1),font_name), ("FONTSIZE",(0,0),(-1,-1),9)]))
         story.append(t)
 
     # Tasks
@@ -124,7 +130,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         for tsk in tasks:
             task_data.append([tsk["task_name"], str(tsk.get("quantity", "")), tsk.get("unit", ""), str(tsk.get("cumulative_pct", ""))])
         t = Table(task_data, colWidths=[8*cm, 3*cm, 3*cm, 3*cm])
-        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTSIZE",(0,0),(-1,-1),9)]))
+        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTNAME",(0,0),(-1,-1),font_name), ("FONTSIZE",(0,0),(-1,-1),9)]))
         story.append(t)
 
     # Notes
@@ -167,6 +173,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
     t = Table(sig_data, colWidths=[5.3*cm, 5.3*cm, 5.3*cm])
     t.setStyle(TableStyle([
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("TOPPADDING", (0, 1), (-1, 1), 40),
     ]))
