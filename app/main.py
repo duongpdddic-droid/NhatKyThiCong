@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import date, timedelta
 
 from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
@@ -22,6 +22,7 @@ from app.auth import (
     hash_password, verify_password, create_access_token,
     get_current_user, require_user, require_role,
 )
+from app import r2
 
 app = FastAPI(title="Nhật ký thi công")
 
@@ -35,10 +36,28 @@ async def global_exception_handler(request, exc):
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
-app.mount("/uploads", StaticFiles(directory=str(BASE_DIR / "uploads")), name="uploads")
 
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+r2.LOCAL_DIR = UPLOAD_DIR
+
+
+@app.get("/uploads/{filename}")
+def serve_upload(filename: str, user=Depends(require_user)):
+    """Serve diary photos from R2 (private bucket) with local fallback.
+
+    Replaces the former StaticFiles mount so the route always wins and the
+    bucket never leaks a public URL.  Auth is enforced by the
+    ``require_user`` dependency: unauthenticated requests are redirected to
+    the login page instead of leaking private bucket contents.
+    """
+    data = r2.read_file(filename)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Ảnh không tồn tại")
+    from pathlib import Path as _P
+    ext = _P(filename).suffix.lower()
+    media = r2.CONTENT_TYPES.get(ext, "image/jpeg")
+    return Response(content=data, media_type=media)
 
 
 @app.on_event("startup")
@@ -216,13 +235,43 @@ def _add_timemark(image_path, text):
         print("Timemark error:", e)
 
 
+async def _persist_photo(file_obj, diary_id: int, stamp: str) -> str | None:
+    """Read an uploaded file, apply the timemark, and store it.
+
+    Returns the stored filename, or None when the upload is empty.  Storage
+    goes through ``r2.save_file`` so the bytes land in R2 when configured and
+    on the local filesystem otherwise.  The timemark is applied to a temp file
+    because Pillow works on paths; the temp file is removed afterwards.
+    """
+    content = await file_obj.read()
+    if not content:
+        return None
+    ext = Path(file_obj.filename).suffix or ".jpg"
+    fname = f"diary_{diary_id}_{uuid.uuid4().hex}{ext}"
+    tmp = UPLOAD_DIR / f".tmp_{fname}"
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(content)
+        try:
+            _add_timemark(str(tmp), stamp)
+        except Exception as te:
+            print("Timemark error:", te)
+        r2.save_file(fname, tmp.read_bytes())
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return fname
+
+
 async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions, form, prior_ids=None):
     """Apply existing-photo changes (delete / replace / caption) safely.
 
-    Replacements are written to disk first and only committed to the DB
+    Replacements are written to storage first and only committed to the DB
     (replacing the old filename) *before* the transaction commits; the old
-    file is removed only after a successful commit. Returns a list of
-    (old_path, new_path) pairs for deferred old-file cleanup.
+    object is removed only after a successful commit. Returns a list of old
+    filenames deferred for cleanup.
 
     Only photos that already existed *before* this request are touched:
     ``prior_ids`` is a snapshot of the diary's photo ids taken before the
@@ -238,6 +287,8 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
     pairing silently replaces the wrong photo once more than one existing
     photo is present.
     """
+    from datetime import datetime
+    stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
     kept_ids = {int(pid) for pid in existing_ids if pid}
     prior_set = set(prior_ids) if prior_ids is not None else None
     deferred_old = []
@@ -249,7 +300,7 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
             continue
         if pid not in kept_ids:
             c.execute("DELETE FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id))
-            deferred_old.append((_old_fpath(row["filename"]), ""))
+            deferred_old.append(row["filename"])
     for i, pid in enumerate(existing_ids):
         if not pid:
             continue
@@ -263,40 +314,22 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
         f = next((x for x in files if x and getattr(x, "filename", "")), None)
         submitted_caption = existing_captions[i] if i < len(existing_captions) else ""
         if f:
-            ext = Path(f.filename).suffix or ".jpg"
-            fname = f"diary_{row['diary_id']}_{uuid.uuid4().hex}{ext}"
-            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-            new_path = UPLOAD_DIR / fname
-            content = await f.read()
-            if content:
-                with open(new_path, "wb") as fh:
-                    fh.write(content)
-                try:
-                    from datetime import datetime
-                    _add_timemark(str(new_path), datetime.now().strftime("%d/%m/%Y %H:%M"))
-                except Exception as te:
-                    print("Timemark error:", te)
+            fname = await _persist_photo(f, row["diary_id"], stamp)
+            if fname:
                 cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
                 c.execute("UPDATE diary_photos SET filename=?, caption=? WHERE id=? AND diary_id=?", (fname, cap, pid, diary_id))
-                deferred_old.append((_old_fpath(row["filename"]), str(new_path)))
+                deferred_old.append(row["filename"])
                 continue
         cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
         c.execute("UPDATE diary_photos SET caption=? WHERE id=? AND diary_id=?", (cap, pid, diary_id))
     return deferred_old
 
 
-def _old_fpath(filename):
-    return os.path.join(str(UPLOAD_DIR), filename)
-
-
 def _cleanup_replaced_files(deferred_old):
-    """Remove old files only after the new ones are safely on disk."""
-    for old_path, new_path in deferred_old:
-        if not new_path or os.path.exists(new_path):
-            try:
-                os.remove(old_path)
-            except Exception:
-                pass
+    """Remove old objects only after the new ones are safely on storage."""
+    for old_filename in deferred_old:
+        if old_filename:
+            r2.delete_file(old_filename)
 
 
 @app.post("/projects/{project_id}/diary/save")
@@ -407,26 +440,15 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         # Photos with captions
         prior_ids = [r["id"] for r in c.execute(
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%d/%m/%Y %H:%M")
         files = form.getlist("photos")
         captions = form.getlist("photo_captions")
         for i, f in enumerate(files):
             if f and f.filename:
-                ext = Path(f.filename).suffix
-                fname = f"diary_{diary_id}_{uuid.uuid4().hex}{ext}"
-                UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-                fpath = UPLOAD_DIR / fname
-                file_content = await f.read()
-                if not file_content:
+                fname = await _persist_photo(f, diary_id, stamp)
+                if not fname:
                     continue
-                with open(fpath, "wb") as fh:
-                    fh.write(file_content)
-                # Add timemark (non-fatal)
-                try:
-                    from datetime import datetime
-                    stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-                    _add_timemark(str(fpath), stamp)
-                except Exception as te:
-                    print("Timemark error:", te)
                 caption = captions[i] if i < len(captions) else ""
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
@@ -672,10 +694,13 @@ def diary_edit(request: Request, project_id: int, diary_id: int, user=Depends(re
 def diary_delete(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
     c = connect()
     try:
+        photos = [r["filename"] for r in c.execute(
+            "SELECT filename FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         c.execute("DELETE FROM diaries WHERE id=?", (diary_id,))
         c.commit()
     finally:
         c.close()
+    r2.delete_diary_objects(diary_id, photos)
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
 
 
@@ -879,25 +904,15 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
 
         prior_ids = [r["id"] for r in c.execute(
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
+        from datetime import datetime as _dt2
+        stamp = _dt2.now().strftime("%d/%m/%Y %H:%M")
         files = form.getlist("photos")
         captions = form.getlist("photo_captions")
         for i, f in enumerate(files):
             if f and f.filename:
-                ext = __import__("pathlib").Path(f.filename).suffix
-                fname = f"diary_{diary_id}_{uuid.uuid4().hex}{ext}"
-                UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-                fpath = UPLOAD_DIR / fname
-                file_content = await f.read()
-                if not file_content:
+                fname = await _persist_photo(f, diary_id, stamp)
+                if not fname:
                     continue
-                with open(fpath, "wb") as fh:
-                    fh.write(file_content)
-                try:
-                    from datetime import datetime
-                    stamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-                    _add_timemark(str(fpath), stamp)
-                except Exception as te:
-                    print("Timemark error:", te)
                 caption = captions[i] if i < len(captions) else ""
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))

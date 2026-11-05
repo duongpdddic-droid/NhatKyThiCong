@@ -34,16 +34,30 @@ async def send_message(chat_id: str, text: str):
         await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
 
 
-async def send_photo(chat_id: str, photo_path: str, caption: str = ""):
+async def send_photo(chat_id: str, photo_path: str = "", caption: str = "",
+                     photo_bytes: bytes | None = None):
+    """Send a photo to Telegram.
+
+    ``photo_bytes`` takes precedence when supplied (R2-backed photos); the
+    function falls back to reading ``photo_path`` from the local filesystem
+    for legacy callers.
+    """
     BOT_TOKEN = get_bot_token()
     if not BOT_TOKEN or not chat_id:
+        return
+    if photo_bytes is None and photo_path:
+        try:
+            with open(photo_path, "rb") as f:
+                photo_bytes = f.read()
+        except OSError:
+            return
+    if not photo_bytes:
         return
     import httpx
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     async with httpx.AsyncClient() as client:
-        with open(photo_path, "rb") as f:
-            await client.post(url, data={"chat_id": chat_id, "caption": caption},
-                             files={"photo": f})
+        await client.post(url, data={"chat_id": chat_id, "caption": caption},
+                          files={"photo": photo_bytes})
 
 
 async def send_document(chat_id: str, doc_path: str, caption: str = ""):
@@ -130,46 +144,19 @@ async def send_diary_report(project_id: int, diary_id: int):
 
     msg = "\n".join(lines)
     upload_dir = Path(__file__).parent.parent / "uploads"
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from app import r2
 
     for chat_id in chat_ids:
         await send_message(chat_id, msg)
         for p in photos[:10]:
-            await send_photo(chat_id, str(upload_dir / p["filename"]),
-                             caption=p.get("caption", ""))
+            data = r2.read_file(p["filename"])
+            if data is None:
+                # Legacy local fallback
+                local = upload_dir / p["filename"]
+                if local.exists():
+                    data = local.read_bytes()
+            if data:
+                await send_photo(chat_id, photo_bytes=data,
+                                 caption=p.get("caption", ""))
     return {"ok": True, "sent_to": len(chat_ids)}
-
-    # Build message
-    lines = [
-        f"📋 <b>Nhật ký thi công — {project['name']}</b>",
-        f"📅 Ngày: {diary['date']}",
-        f"🌤️ Thời tiết: {diary['weather_temp']}°C — {diary['weather_desc']}",
-        f"👷 Tổng nhân lực: {diary['total_workers']} người",
-        "",
-        "<b>Nhân lực:</b>",
-    ]
-    for l in labor:
-        if l["count"] > 0:
-            lines.append(f"  • {l['name']}: {l['count']} người")
-    lines.append("")
-    lines.append("<b>Máy móc:</b>")
-    for m in machinery:
-        if m["hours"] > 0:
-            lines.append(f"  • {m['name']}: {m['hours']} giờ")
-    if diary.get("notes"):
-        lines.append(f"\n📝 Ghi chú: {diary['notes']}")
-    if diary.get("issues") and diary["issues"].strip():
-        level = {"none": "", "low": "🟢", "medium": "🟡", "high": "🔴"}.get(diary.get("issue_level", "none"), "")
-        lines.append(f"\n⚠️ Vướng mắc {level}: {diary['issues']}")
-        lines.append(f"Kiến nghị: {diary.get('issue_status', '')}")
-    lines.append(f"\n📸 Ảnh: {len(photos)} ảnh")
-
-    msg = "\n".join(lines)
-    for r in recipients:
-        if r.get("telegram_chat_id"):
-            await send_message(r["telegram_chat_id"], msg)
-            # Send photos
-            upload_dir = Path(__file__).parent.parent / "uploads"
-            for p in photos[:10]:
-                await send_photo(r["telegram_chat_id"], str(upload_dir / p["filename"]))
-            # Send PDF if exists
-            # (PDF generation handled separately)

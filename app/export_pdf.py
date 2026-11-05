@@ -1,4 +1,5 @@
 """PDF export for construction diary."""
+import io
 import os
 import sys
 from pathlib import Path
@@ -57,6 +58,18 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
                     "SELECT filename, caption FROM diary_photos WHERE diary_id=?", (diary_id,))]
     finally:
         c.close()
+
+    # Resolve photo bytes from R2 (or local fallback) before building the PDF.
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from app import r2
+    local_uploads = Path(__file__).parent.parent / "uploads"
+    for p in photos:
+        data = r2.read_file(p["filename"])
+        if data is None:
+            local = local_uploads / p["filename"]
+            if local.exists():
+                data = local.read_bytes()
+        p["_bytes"] = data
 
     filename = f"nhatky_{diary_id}_{diary['date']}.pdf"
     filepath = EXPORT_DIR / filename
@@ -150,18 +163,18 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
     # Photos
     if photos:
         story.append(Paragraph("7. ẢNH HIỆN TRƯỜNG", h2_style))
-        upload_dir = Path(__file__).parent.parent / "uploads"
         for p in photos:
-            img_path = upload_dir / p["filename"]
-            if img_path.exists():
-                try:
-                    img = Image(str(img_path), width=8*cm, height=6*cm)
-                    story.append(img)
-                    if p.get("caption"):
-                        story.append(Paragraph(p["caption"], normal))
-                    story.append(Spacer(1, 0.2*cm))
-                except Exception:
-                    pass
+            data = p.get("_bytes")
+            if not data:
+                continue
+            try:
+                img = Image(io.BytesIO(data), width=8*cm, height=6*cm)
+                story.append(img)
+                if p.get("caption"):
+                    story.append(Paragraph(p["caption"], normal))
+                story.append(Spacer(1, 0.2*cm))
+            except Exception:
+                pass
 
     # Signatures
     story.append(Spacer(1, 1*cm))

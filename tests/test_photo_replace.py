@@ -17,6 +17,8 @@ TEST_UPLOAD = TMP / "uploads"
 dbmod.DB_PATH = DB_PATH
 dbmod.IS_PG = False
 mainmod.UPLOAD_DIR = TEST_UPLOAD
+import app.r2 as r2mod
+r2mod.LOCAL_DIR = TEST_UPLOAD
 
 from app.main import app, UPLOAD_DIR
 from app.auth import create_access_token
@@ -25,6 +27,9 @@ from app.db import connect
 
 @pytest.fixture(scope="module")
 def client():
+    dbmod.DB_PATH = DB_PATH
+    r2mod.LOCAL_DIR = TEST_UPLOAD
+    r2mod._client = None
     if DB_PATH.exists():
         DB_PATH.unlink()
     dbmod.init_db()
