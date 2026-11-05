@@ -11,6 +11,7 @@
   <a href="/projects/{{ project.id }}/diary/new" class="btn primary sm">+ Nhật ký</a>
 </div>
 <p style="color:var(--muted);font-size:13px;margin-bottom:12px;">{{ project.address }} | CĐT: {{ project.investor }}</p>
+{% if user.role == "admin" %}<a href="/projects/{{ project.id }}/edit" class="btn sm" style="margin-bottom:12px;">✏️ Sửa dự án</a>{% endif %}
 
 <h3 style="margin-bottom:8px;">Nhật ký thi công</h3>
 {% for d in diaries %}
@@ -55,7 +56,26 @@
 
 {% if user.role == 'admin' %}
 <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
-  <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('Xóa dự án này và toàn bộ nhật ký?')">
+  <h3 style="margin-bottom:8px;">🔔 Nhắc nhở tạo nhật ký</h3>
+  <form method="post" action="/projects/{{ project.id }}/reminders">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Bật nhắc nhở</label>
+        <select name="reminder_enabled">
+          <option value="1" {% if project.get('reminder_enabled', 1) == 1 %}selected{% endif %}>Bật</option>
+          <option value="0" {% if project.get('reminder_enabled', 1) == 0 %}selected{% endif %}>Tắt</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Giờ nhắc</label>
+        <input type="time" name="reminder_time" value="{{ project.get('reminder_time', '08:00') }}">
+      </div>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:4px 0;">Nhắc mọi người nhận Telegram nếu ngày này chưa có nhật ký.</p>
+    <button type="submit" class="btn sm primary">Lưu</button>
+    <button type="button" class="btn sm" onclick="event.preventDefault();fetch('/api/reminders/run?project_id={{ project.id }}&amp;force=true',{method:'GET'}).then(r=>r.json()).then(d=>alert((d.ok?'Đã gửi: ':'Lỗi: ')+(d.error||d.ok_count+' thành công')));">▶ Thử gửi ngay</button>
+  </form>
+  <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('Xóa dự án này và toàn bộ nhật ký?')" style="margin-top:12px;">
     <button type="submit" class="btn sm" style="color:var(--danger);">🗑️ Xóa dự án</button>
   </form>
 </div>

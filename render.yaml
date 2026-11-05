@@ -1,3 +1,8 @@
+# NOTE: The in-process reminder scheduler only fires while the web instance
+# is awake. On the free tier the instance sleeps after ~15 min of inactivity,
+# so scheduled reminders may be delayed. For guaranteed delivery, either
+# upgrade the plan or have an external cron POST/GET /api/reminders/run (admin
+# auth required) on the desired schedule.
 services:
   - type: web
     name: nhatky-thi-cong

@@ -3,6 +3,7 @@
 {% block content %}
 <h2>Thư viện Nhân lực & Máy móc</h2>
 <a href="/admin/users" class="btn sm">👥 User</a>
+<a href="/admin/reminders" class="btn sm">🔔 Nhắc nhở</a>
 
 <div class="section">
   <h2>Nhân lực</h2>
@@ -12,7 +13,17 @@
     <button type="submit" class="btn sm primary">+</button>
   </form>
   {% for l in labor %}
-  <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px;">{{ l.name }} ({{ l.unit }})</div>
+  <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span style="flex:1;">{{ l.name }} ({{ l.unit }}){% if not l.is_active %} <span class="badge warn">đã tắt</span>{% endif %}</span>
+    <form method="post" action="/admin/library/labor/{{ l.id }}/edit" style="display:flex;gap:4px;">
+      <input type="text" name="name" value="{{ l.name }}" style="padding:4px;border:1px solid var(--border);border-radius:6px;width:120px;">
+      <input type="text" name="unit" value="{{ l.unit }}" style="padding:4px;border:1px solid var(--border);border-radius:6px;width:60px;">
+      <button type="submit" class="btn sm">Lưu</button>
+    </form>
+    <form method="post" action="/admin/library/labor/{{ l.id }}/toggle" style="display:inline;">
+      <button type="submit" class="btn sm">{% if l.is_active %}Tắt{% else %}Bật{% endif %}</button>
+    </form>
+  </div>
   {% endfor %}
 </div>
 
@@ -24,7 +35,17 @@
     <button type="submit" class="btn sm primary">+</button>
   </form>
   {% for m in machinery %}
-  <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px;">{{ m.name }} ({{ m.unit }})</div>
+  <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span style="flex:1;">{{ m.name }} ({{ m.unit }}){% if not m.is_active %} <span class="badge warn">đã tắt</span>{% endif %}</span>
+    <form method="post" action="/admin/library/machinery/{{ m.id }}/edit" style="display:flex;gap:4px;">
+      <input type="text" name="name" value="{{ m.name }}" style="padding:4px;border:1px solid var(--border);border-radius:6px;width:120px;">
+      <input type="text" name="unit" value="{{ m.unit }}" style="padding:4px;border:1px solid var(--border);border-radius:6px;width:60px;">
+      <button type="submit" class="btn sm">Lưu</button>
+    </form>
+    <form method="post" action="/admin/library/machinery/{{ m.id }}/toggle" style="display:inline;">
+      <button type="submit" class="btn sm">{% if m.is_active %}Tắt{% else %}Bật{% endif %}</button>
+    </form>
+  </div>
   {% endfor %}
 </div>
 {% endblock %}

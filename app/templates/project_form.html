@@ -1,17 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Dự án mới{% endblock %}
+{% block title %}{% if project %}Sửa dự án{% else %}Dự án mới{% endif %}{% endblock %}
 {% block content %}
-<h2>Dự án mới</h2>
+<h2>{% if project %}Sửa dự án{% else %}Dự án mới{% endif %}</h2>
+{% if project %}
+<form method="post" action="/projects/{{ project.id }}/edit">
+{% else %}
 <form method="post" action="/projects/new">
-  <div class="form-group"><label>Tên dự án</label><input type="text" name="name" required></div>
-  <div class="form-group"><label>Địa chỉ</label><input type="text" name="address"></div>
-  <div class="form-group"><label>Chủ đầu tư</label><input type="text" name="investor"></div>
-  <div class="form-group"><label>Nhà thầu</label><input type="text" name="contractor"></div>
-  <div class="form-group"><label>TVGS</label><input type="text" name="supervisor"></div>
+{% endif %}
+  <div class="form-group"><label>Tên dự án</label><input type="text" name="name" value="{{ project.name if project else '' }}" required></div>
+  <div class="form-group"><label>Địa chỉ</label><input type="text" name="address" value="{{ project.address if project else '' }}"></div>
+  <div class="form-group"><label>Chủ đầu tư</label><input type="text" name="investor" value="{{ project.investor if project else '' }}"></div>
+  <div class="form-group"><label>Nhà thầu</label><input type="text" name="contractor" value="{{ project.contractor if project else '' }}"></div>
+  <div class="form-group"><label>TVGS</label><input type="text" name="supervisor" value="{{ project.supervisor if project else '' }}"></div>
   <div class="form-row">
-    <div class="form-group"><label>Ngày bắt đầu</label><input type="date" name="start_date"></div>
-    <div class="form-group"><label>Ngày kết thúc</label><input type="date" name="end_date"></div>
+    <div class="form-group"><label>Ngày bắt đầu</label><input type="date" name="start_date" value="{{ project.start_date if project else '' }}"></div>
+    <div class="form-group"><label>Ngày kết thúc</label><input type="date" name="end_date" value="{{ project.end_date if project else '' }}"></div>
   </div>
-  <button type="submit" class="btn primary full">Tạo dự án</button>
+  <button type="submit" class="btn primary full">{% if project %}Cập nhật{% else %}Tạo dự án{% endif %}</button>
 </form>
+<a href="{% if project %}/projects/{{ project.id }}{% else %}/{% endif %}" class="btn sm" style="margin-top:12px;">← Quay lại</a>
 {% endblock %}

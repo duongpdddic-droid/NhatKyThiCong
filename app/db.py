@@ -21,6 +21,67 @@ def _adapt_sql(sql: str) -> str:
     return sql
 
 
+def _table_columns(c, table):
+    """Return the set of column names for a table (SQLite pragma only)."""
+    if IS_PG:
+        return set()
+    try:
+        return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+    except Exception:
+        return set()
+
+
+def _migrate_reminder_columns(c):
+    """Additive migration for the reminder feature on pre-existing DBs.
+
+    New columns and tables are added only when missing; nothing is dropped or
+    renamed, so old databases keep working after an upgrade.
+    """
+    if not IS_PG:
+        cols = _table_columns(c, "projects")
+        if "reminder_enabled" not in cols:
+            c.execute("ALTER TABLE projects ADD COLUMN reminder_enabled INTEGER DEFAULT 1")
+        if "reminder_time" not in cols:
+            c.execute("ALTER TABLE projects ADD COLUMN reminder_time TEXT DEFAULT '08:00'")
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS project_reminders (
+                project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                enabled INTEGER DEFAULT 1,
+                time TEXT DEFAULT '08:00'
+            );
+            CREATE TABLE IF NOT EXISTS reminder_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                log_date TEXT NOT NULL,
+                sent_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(project_id, log_date)
+            );
+        """)
+    else:
+        # PostgreSQL: CREATE TABLE IF NOT EXISTS (run earlier in init_db) is
+        # idempotent for the new tables, but it does NOT add columns to an
+        # existing table.  Use ADD COLUMN IF NOT EXISTS (PG >= 9.6) so a
+        # duplicate column does not abort the surrounding transaction.
+        c.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS reminder_enabled INTEGER DEFAULT 1")
+        c.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS reminder_time TEXT DEFAULT '08:00'")
+
+
+def _migrate_library_columns(c):
+    """Additive migration: soft-disable flag for labor/machinery library."""
+    if not IS_PG:
+        for table in ("labor_types", "machinery_types"):
+            cols = _table_columns(c, table)
+            if "is_active" not in cols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN is_active INTEGER DEFAULT 1")
+        c.execute("UPDATE labor_types SET is_active=1 WHERE is_active IS NULL")
+        c.execute("UPDATE machinery_types SET is_active=1 WHERE is_active IS NULL")
+    else:
+        c.execute("ALTER TABLE labor_types ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 1")
+        c.execute("ALTER TABLE machinery_types ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 1")
+        c.execute("UPDATE labor_types SET is_active=1 WHERE is_active IS NULL")
+        c.execute("UPDATE machinery_types SET is_active=1 WHERE is_active IS NULL")
+
+
 def connect():
     if IS_PG:
         import psycopg2
@@ -113,6 +174,8 @@ def init_db():
             supervisor TEXT,
             start_date TEXT,
             end_date TEXT,
+            reminder_enabled INTEGER DEFAULT 1,
+            reminder_time TEXT DEFAULT '08:00',
             created_at TIMESTAMP DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS user_projects (
@@ -124,13 +187,15 @@ def init_db():
             id SERIAL PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
             unit TEXT DEFAULT 'người',
-            sort_order INTEGER DEFAULT 0
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS machinery_types (
             id SERIAL PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
             unit TEXT DEFAULT 'máy',
-            sort_order INTEGER DEFAULT 0
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS diaries (
             id SERIAL PRIMARY KEY,
@@ -200,6 +265,19 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         );
+        -- Reminder: per-project nag to create today's diary.
+        CREATE TABLE IF NOT EXISTS project_reminders (
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            enabled INTEGER DEFAULT 1,
+            time TEXT DEFAULT '08:00'
+        );
+        CREATE TABLE IF NOT EXISTS reminder_log (
+            id SERIAL PRIMARY KEY,
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            log_date TEXT NOT NULL,
+            sent_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(project_id, log_date)
+        );
         """
         if IS_PG:
             c.executescript(schema)
@@ -236,6 +314,9 @@ def init_db():
                           (name, unit, order))
         # Migrate legacy 'giờ' unit to 'máy' for existing library entries.
         c.execute("UPDATE machinery_types SET unit='máy' WHERE unit='giờ'")
+        _migrate_library_columns(c)
+        # Additive migrations for existing databases (backward compatible).
+        _migrate_reminder_columns(c)
         import hashlib
         # Only create admin if not exists (never overwrite password)
         existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()

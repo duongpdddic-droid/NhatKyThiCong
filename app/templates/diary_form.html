@@ -17,28 +17,38 @@
     <div class="form-row">
       <div class="form-group">
         <label>Nhiệt độ (°C)</label>
-        <input type="number" step="0.1" name="weather_temp" id="weather_temp" value="">
+        <input type="number" step="0.1" name="weather_temp" id="weather_temp" value="{{ diary.weather_temp if diary else '' }}">
       </div>
       <div class="form-group">
         <label>Thời tiết</label>
-        <input type="text" name="weather_desc" id="weather_desc" value="">
+        <input type="text" name="weather_desc" id="weather_desc" value="{{ diary.weather_desc if diary else '' }}">
       </div>
     </div>
     <button type="button" class="btn sm" onclick="loadWeather()">🌤️ Lấy thời tiết</button>
     <div class="form-group" style="margin-top:8px;">
       <label>Chỉ huy trưởng</label>
-      <input type="text" name="foreman" value="{{ user.full_name }}">
+      <input type="text" name="foreman" value="{{ diary.foreman if diary else user.full_name }}">
     </div>
     <div class="form-group">
       <label>Tổng nhân lực (người) — tự động</label>
-      <input type="number" name="total_workers" id="total_workers" value="0" readonly style="background:#f1f5f9;">
+      <input type="number" name="total_workers" id="total_workers" value="{{ diary.total_workers if diary else 0 }}" readonly style="background:#f1f5f9;">
     </div>
   </div>
 
   <div class="section">
     <h2>§2 Công việc thực hiện</h2>
-    <div id="tasks-container"></div>
-    <button type="button" class="btn sm" onclick="addTask()">+ Thêm công việc</button>
+    <div id="tasks-container">
+      {% for t in (existing_tasks or []) %}
+      <div class="form-row" style="margin-bottom:6px;">
+        <input type="text" name="task_name" value="{{ t.task_name }}" placeholder="Công việc" style="flex:3;">
+        <input type="number" step="0.01" name="task_qty" value="{{ t.quantity }}" placeholder="KL" style="flex:1;">
+        <input type="text" name="task_unit" value="{{ t.unit }}" placeholder="ĐVT" style="flex:1;">
+        <input type="number" step="0.01" name="task_pct" value="{{ t.cumulative_pct }}" placeholder="% lũy kế" style="flex:1;">
+        <button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); this.parentElement.remove();">✕</button>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn sm" onclick="event.preventDefault(); addTask(); return false;">+ Thêm công việc</button>
   </div>
 
   <div class="section">
@@ -84,7 +94,7 @@
       </div>
       {% endfor %}
     </div>
-    <button type="button" class="btn sm" onclick="addMaterial()">+ Thêm vật tư</button>
+    <button type="button" class="btn sm" onclick="event.preventDefault(); addMaterial(); return false;">+ Thêm vật tư</button>
   </div>
 
   <div class="section">
@@ -116,33 +126,31 @@
     <img id="lightbox-img" style="max-width:90%;max-height:90%;border-radius:8px;">
   </div>
 
-  </div>
-
   <div class="section">
     <h2>§7 Vướng mắc & Kiến nghị</h2>
     <div class="form-group">
       <label>Mức độ</label>
       <select name="issue_level">
-        <option value="none">Không có</option>
-        <option value="low">🟢 Nhẹ</option>
-        <option value="medium">🟡 Trung bình</option>
-        <option value="high">🔴 Nghiêm trọng</option>
+        <option value="none" {% if not diary or diary.issue_level == 'none' %}selected{% endif %}>Không có</option>
+        <option value="low" {% if diary and diary.issue_level == 'low' %}selected{% endif %}>🟢 Nhẹ</option>
+        <option value="medium" {% if diary and diary.issue_level == 'medium' %}selected{% endif %}>🟡 Trung bình</option>
+        <option value="high" {% if diary and diary.issue_level == 'high' %}selected{% endif %}>🔴 Nghiêm trọng</option>
       </select>
     </div>
     <div class="form-group">
       <label>Vướng mắc</label>
-      <textarea name="issues" placeholder="Mô tả vấn đề gặp phải..."></textarea>
+      <textarea name="issues" placeholder="Mô tả vấn đề gặp phải...">{{ diary.issues if diary else '' }}</textarea>
     </div>
     <div class="form-group">
       <label>Kiến nghị / Giải pháp</label>
-      <textarea name="issue_status" placeholder="Đề xuất giải pháp, yêu cầu hỗ trợ..."></textarea>
+      <textarea name="issue_status" placeholder="Đề xuất giải pháp, yêu cầu hỗ trợ...">{{ diary.issue_status if diary else '' }}</textarea>
     </div>
   </div>
 
   <div class="section">
     <h2>§8 Ghi chú</h2>
     <div class="form-group">
-      <textarea name="notes" placeholder="Ghi chú thêm..."></textarea>
+      <textarea name="notes" placeholder="Ghi chú thêm...">{{ diary.notes if diary else '' }}</textarea>
     </div>
   </div>
 
@@ -253,7 +261,6 @@ function addPhotoInput(mode) {
     '<button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); this.parentElement.remove();">Xoa</button>';
 
   container.appendChild(div);
-  // Attach click handlers after DOM insertion
   document.getElementById('btn-g-' + idx).onclick = function(e) { e.preventDefault(); document.getElementById('pg-' + idx).click(); };
   document.getElementById('btn-c-' + idx).onclick = function(e) { e.preventDefault(); document.getElementById('pc-' + idx).click(); };
   const gInput = document.getElementById('pg-' + idx);
@@ -336,5 +343,6 @@ function removeExistingPhoto(btn) {
 }
 
 window.addEventListener('load', wireExistingPhotoButtons);
+window.addEventListener('load', calcWorkers);
 </script>
 {% endblock %}

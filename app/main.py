@@ -4,7 +4,7 @@ import sys
 import json
 import uuid
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse, Response
@@ -63,6 +63,49 @@ def serve_upload(filename: str, user=Depends(require_user)):
 @app.on_event("startup")
 def startup():
     init_db()
+    import threading
+    threading.Thread(target=_reminder_loop, daemon=True).start()
+
+
+def _reminder_loop():
+    """Background scheduler: poll every 60 s and fire due reminders.
+
+    Runs in a daemon thread so it dies with the process.  A single failed
+    tick must not stop the loop.
+
+    LIMITATION — Render free tier: the web instance is put to sleep after
+    ~15 min of inactivity, so the in-process scheduler cannot fire reminders
+    while the instance is asleep.  Treat this as best-effort; for guaranteed
+    delivery either upgrade the plan or have an external cron hit
+    /api/reminders/run (admin-authenticated) on the desired schedule.
+    """
+    import time
+    from app.telegram_bot import _reminder_tick
+    while True:
+        try:
+            _reminder_loop_run(_reminder_tick)
+        except Exception as exc:
+            print("Reminder loop error:", exc)
+        time.sleep(60)
+
+
+def _reminder_loop_run(tick_fn):
+    """Run one tick and persist the result for the admin page."""
+    import asyncio
+    from app.telegram_bot import _vn_now
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(tick_fn())
+        finally:
+            loop.close()
+        _REMINDER_STATE["last"] = result
+        _REMINDER_STATE["at"] = _vn_now().isoformat()
+    except Exception as exc:
+        _REMINDER_STATE["last"] = {"ok": False, "error": str(exc)}
+
+
+_REMINDER_STATE = {"last": None, "at": None}
 
 
 # ── Auth routes ──────────────────────────────────────────────────────────────
@@ -148,6 +191,32 @@ def project_create(request: Request, user=Depends(require_role("admin")),
     return RedirectResponse(url="/", status_code=302)
 
 
+@app.get("/projects/{project_id}/edit", response_class=HTMLResponse)
+def project_edit_page(request: Request, project_id: int, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+    finally:
+        c.close()
+    return templates.TemplateResponse(request, "project_form.html", {"user": user, "project": project})
+
+
+@app.post("/projects/{project_id}/edit")
+def project_update(request: Request, project_id: int, user=Depends(require_role("admin")),
+                   name: str = Form(...), address: str = Form(""), investor: str = Form(""),
+                   contractor: str = Form(""), supervisor: str = Form(""),
+                   start_date: str = Form(""), end_date: str = Form("")):
+    c = connect()
+    try:
+        c.execute("""UPDATE projects SET name=?, address=?, investor=?, contractor=?,
+                     supervisor=?, start_date=?, end_date=? WHERE id=?""",
+                  (name, address, investor, contractor, supervisor, start_date, end_date, project_id))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
+
+
 @app.get("/projects/{project_id}", response_class=HTMLResponse)
 def project_detail(request: Request, project_id: int, user=Depends(require_user)):
     c = connect()
@@ -174,8 +243,8 @@ def diary_new(request: Request, project_id: int, date_str: str = None, user=Depe
     c = connect()
     try:
         project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
-        labor_types = [dict(r) for r in c.execute("SELECT * FROM labor_types ORDER BY sort_order")]
-        machinery_types = [dict(r) for r in c.execute("SELECT * FROM machinery_types ORDER BY sort_order")]
+        labor_types = [dict(r) for r in c.execute("SELECT * FROM labor_types WHERE COALESCE(is_active,1)=1 ORDER BY sort_order")]
+        machinery_types = [dict(r) for r in c.execute("SELECT * FROM machinery_types WHERE COALESCE(is_active,1)=1 ORDER BY sort_order")]
         # Auto-fill from previous day
         target_date = date_str or date.today().isoformat()
         prev = c.execute(
@@ -533,6 +602,95 @@ def admin_settings_save(request: Request, user=Depends(require_role("admin")),
     return RedirectResponse(url="/admin/settings", status_code=302)
 
 
+# ── Admin: Reminder scheduler ─────────────────────────────────────────────────
+
+@app.get("/admin/reminders", response_class=HTMLResponse)
+def admin_reminders(request: Request, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        projects = [dict(r) for r in c.execute(
+            "SELECT * FROM projects ORDER BY id DESC").fetchall()]
+        for p in projects:
+            row = c.execute(
+                "SELECT enabled, time FROM project_reminders WHERE project_id=?",
+                (p["id"],)).fetchone()
+            if row:
+                p["reminder_enabled"] = row["enabled"]
+                p["reminder_time"] = row["time"]
+            else:
+                p["reminder_enabled"] = p.get("reminder_enabled", 1)
+                p["reminder_time"] = p.get("reminder_time", "08:00")
+        state = dict(_REMINDER_STATE)
+    finally:
+        c.close()
+    return templates.TemplateResponse(request, "admin_reminders.html", {
+        "user": user, "projects": projects, "state": state,
+    })
+
+
+@app.post("/admin/reminders/{project_id}")
+def admin_reminders_save(request: Request, project_id: int,
+                         user=Depends(require_role("admin")),
+                         reminder_enabled: str = Form("1"),
+                         reminder_time: str = Form("08:00")):
+    c = connect()
+    try:
+        enabled = 1 if reminder_enabled in ("1", "on", "true", "True") else 0
+        c.execute(
+            "INSERT INTO project_reminders (project_id, enabled, time) VALUES (?,?,?) "
+            "ON CONFLICT(project_id) DO UPDATE SET enabled=excluded.enabled, "
+            "time=excluded.time",
+            (project_id, enabled, reminder_time))
+        c.execute(
+            "UPDATE projects SET reminder_enabled=?, reminder_time=? WHERE id=?",
+            (enabled, reminder_time, project_id))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/admin/reminders", status_code=302)
+
+
+@app.get("/api/reminders/run")
+async def api_reminders_run(project_id: int = None, force: bool = False,
+                          user=Depends(require_role("admin"))):
+    """Manual trigger: run due reminders now (or for one project). Admin only."""
+    from app.telegram_bot import send_reminder, _reminder_tick
+    if project_id:
+        result = await send_reminder(int(project_id), force=force)
+    else:
+        result = await _reminder_tick(force=force)
+    return result
+
+
+@app.get("/api/reminders/status")
+def api_reminders_status(user=Depends(require_role("admin"))):
+    """Admin-only scheduler state."""
+    return dict(_REMINDER_STATE)
+
+
+@app.post("/projects/{project_id}/reminders")
+def project_reminders_save(request: Request, project_id: int,
+                          user=Depends(require_role("admin")),
+                          reminder_enabled: str = Form("1"),
+                          reminder_time: str = Form("08:00")):
+    """Save reminder settings for a single project (used by the project page)."""
+    c = connect()
+    try:
+        enabled = 1 if reminder_enabled in ("1", "on", "true", "True") else 0
+        c.execute(
+            "INSERT INTO project_reminders (project_id, enabled, time) VALUES (?,?,?) "
+            "ON CONFLICT(project_id) DO UPDATE SET enabled=excluded.enabled, "
+            "time=excluded.time",
+            (project_id, enabled, reminder_time))
+        c.execute(
+            "UPDATE projects SET reminder_enabled=?, reminder_time=? WHERE id=?",
+            (enabled, reminder_time, project_id))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
+
+
 @app.get("/api/weather")
 async def weather_proxy(lat: float = 21.0, lon: float = 105.8, date: str = None):
     import httpx
@@ -634,6 +792,52 @@ def add_machinery(request: Request, user=Depends(require_role("admin")),
     return RedirectResponse(url="/admin/library", status_code=302)
 
 
+@app.post("/admin/library/labor/{item_id}/edit")
+def edit_labor(request: Request, item_id: int, user=Depends(require_role("admin")),
+               name: str = Form(...), unit: str = Form("người")):
+    c = connect()
+    try:
+        c.execute("UPDATE labor_types SET name=?, unit=? WHERE id=?", (name, unit, item_id))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/admin/library", status_code=302)
+
+
+@app.post("/admin/library/labor/{item_id}/toggle")
+def toggle_labor(request: Request, item_id: int, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        c.execute("UPDATE labor_types SET is_active = CASE WHEN COALESCE(is_active,1)=1 THEN 0 ELSE 1 END WHERE id=?", (item_id,))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/admin/library", status_code=302)
+
+
+@app.post("/admin/library/machinery/{item_id}/edit")
+def edit_machinery(request: Request, item_id: int, user=Depends(require_role("admin")),
+                   name: str = Form(...), unit: str = Form("máy")):
+    c = connect()
+    try:
+        c.execute("UPDATE machinery_types SET name=?, unit=? WHERE id=?", (name, unit, item_id))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/admin/library", status_code=302)
+
+
+@app.post("/admin/library/machinery/{item_id}/toggle")
+def toggle_machinery(request: Request, item_id: int, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        c.execute("UPDATE machinery_types SET is_active = CASE WHEN COALESCE(is_active,1)=1 THEN 0 ELSE 1 END WHERE id=?", (item_id,))
+        c.commit()
+    finally:
+        c.close()
+    return RedirectResponse(url="/admin/library", status_code=302)
+
+
 # ── Admin: Assign projects to user ───────────────────────────────────────────
 
 @app.get("/admin/users/{user_id}/projects", response_class=HTMLResponse)
@@ -673,8 +877,12 @@ def diary_edit(request: Request, project_id: int, diary_id: int, user=Depends(re
     try:
         project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
         diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
-        labor_types = [dict(r) for r in c.execute("SELECT * FROM labor_types ORDER BY sort_order")]
-        machinery_types = [dict(r) for r in c.execute("SELECT * FROM machinery_types ORDER BY sort_order")]
+        _all_labor = [dict(r) for r in c.execute("SELECT * FROM labor_types ORDER BY sort_order")]
+        _all_mach = [dict(r) for r in c.execute("SELECT * FROM machinery_types ORDER BY sort_order")]
+        _el = {r["labor_type_id"] for r in c.execute("SELECT labor_type_id FROM diary_labor WHERE diary_id=?", (diary_id,))}
+        _em = {r["machinery_type_id"] for r in c.execute("SELECT machinery_type_id FROM diary_machinery WHERE diary_id=?", (diary_id,))}
+        labor_types = [t for t in _all_labor if t.get("is_active", 1) or t["id"] in _el]
+        machinery_types = [t for t in _all_mach if t.get("is_active", 1) or t["id"] in _em]
         existing_labor = {r["labor_type_id"]: r["count"] for r in c.execute(
             "SELECT * FROM diary_labor WHERE diary_id=?", (diary_id,))}
         existing_machinery = {r["machinery_type_id"]: r["hours"] for r in c.execute(
@@ -711,12 +919,25 @@ def diary_delete(request: Request, project_id: int, diary_id: int, user=Depends(
 
 @app.post("/projects/{project_id}/delete")
 def project_delete(request: Request, project_id: int, user=Depends(require_role("admin"))):
+    # Collect diary ids + photo filenames BEFORE deleting so the stored
+    # objects (R2/local) can be cleaned up; otherwise they leak.
     c = connect()
     try:
+        diary_ids = [r["id"] for r in c.execute(
+            "SELECT id FROM diaries WHERE project_id=?", (project_id,)).fetchall()]
+        photos_by_diary = {}
+        for did in diary_ids:
+            photos_by_diary[did] = [r["filename"] for r in c.execute(
+                "SELECT filename FROM diary_photos WHERE diary_id=?", (did,)).fetchall()]
+        # Remove child diaries (their children cascade via FK) before the project.
+        for did in diary_ids:
+            c.execute("DELETE FROM diaries WHERE id=?", (did,))
         c.execute("DELETE FROM projects WHERE id=?", (project_id,))
         c.commit()
     finally:
         c.close()
+    for did in diary_ids:
+        r2.delete_diary_objects(did, photos_by_diary.get(did, []))
     return RedirectResponse(url="/", status_code=302)
 
 

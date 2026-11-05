@@ -81,6 +81,148 @@ async def send_message(chat_id: str, text: str):
         await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
 
 
+def _vn_now():
+    """Current time in Asia/Ho_Chi_Minh, used so reminders fire on VN wall-clock."""
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+    except Exception:
+        # Fallback for very old runtimes without zoneinfo.
+        import datetime as _d
+        return _d.datetime.utcnow() + _d.timedelta(hours=7)
+
+
+async def send_reminder(project_id: int, force: bool = False) -> dict:
+    """Nag every recipient of *project_id* to create today's diary.
+
+    A project is reminded only when its ``reminder_enabled`` flag is on, its
+    reminder time has come (or *force* is set), today's diary does not yet
+    exist, and we have not already reminded today — the ``reminder_log`` table
+    dedupes per (project, date) so a repeated tick cannot spam the chat.
+
+    "Today" and the wall-clock comparison use Asia/Ho_Chi_Minh so the
+    schedule matches the Vietnamese working day regardless of server TZ.
+
+    Returns a summary dict; never raises.
+    """
+    from datetime import date as _date
+    now = _vn_now()
+    today = now.date().isoformat()
+    c = connect()
+    try:
+        project = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project:
+            return {"ok": False, "error": "Dự án không tồn tại"}
+        project = dict(project)
+        if not project.get("reminder_enabled", 1):
+            return {"ok": False, "error": "Đã tắt nhắc nhở"}
+        if not force:
+            reminder_time = project.get("reminder_time") or "08:00"
+            try:
+                hh, mm = (int(x) for x in str(reminder_time).split(":")[:2])
+            except (ValueError, TypeError):
+                hh, mm = 8, 0
+            if now.hour < hh or (now.hour == hh and now.minute < mm):
+                return {"ok": False, "error": "Chưa đến giờ nhắc nhở"}
+        # Dedupe: already sent today?
+        existing = c.execute(
+            "SELECT 1 FROM reminder_log WHERE project_id=? AND log_date=?",
+            (project_id, today)).fetchone()
+        if existing and not force:
+            return {"ok": False, "error": "Hôm nay đã nhắc rồi"}
+        # Today's diary already exists → nothing to nag about.
+        has_today = c.execute(
+            "SELECT 1 FROM diaries WHERE project_id=? AND date=?",
+            (project_id, today)).fetchone()
+        if has_today:
+            c.execute(
+                "INSERT OR IGNORE INTO reminder_log (project_id, log_date) VALUES (?,?)",
+                (project_id, today))
+            c.commit()
+            return {"ok": False, "error": "Đã có nhật ký hôm nay"}
+        recipients = [dict(r) for r in c.execute(
+            "SELECT * FROM recipients WHERE project_id=? AND telegram_chat_id IS NOT NULL "
+            "AND telegram_chat_id != ''", (project_id,))]
+        users = [dict(r) for r in c.execute(
+            """SELECT u.* FROM users u JOIN user_projects up ON u.id=up.user_id
+               WHERE up.project_id=? AND u.telegram_chat_id IS NOT NULL
+               AND u.telegram_chat_id != ''""", (project_id,))]
+        admins = [dict(r) for r in c.execute(
+            "SELECT * FROM users WHERE role='admin' AND telegram_chat_id IS NOT NULL "
+            "AND telegram_chat_id != ''")]
+    finally:
+        c.close()
+
+    chat_ids = set()
+    for r in recipients:
+        chat_ids.add(r["telegram_chat_id"])
+    for u in users:
+        chat_ids.add(u["telegram_chat_id"])
+    for a in admins:
+        chat_ids.add(a["telegram_chat_id"])
+
+    if not chat_ids:
+        return {"ok": False, "error": "Chưa có người nhận Telegram"}
+
+    msg = (
+        f"🔔 <b>Nhắc nhở tạo nhật ký</b>\n"
+        f"📅 Ngày {now.strftime('%d/%m/%Y')}: dự án <b>{project['name']}</b>"
+        f" ({project.get('address', '')}) chưa có nhật ký thi công.\n"
+        f"Vui lòng nhập nhật ký tại: /projects/{project_id}/diary/new"
+    )
+    ok = 0
+    fail = 0
+    errors = []
+    for chat_id in chat_ids:
+        try:
+            await send_message(chat_id, msg)
+            ok += 1
+        except Exception as exc:
+            fail += 1
+            errors.append(f"{chat_id}: {exc}")
+
+    c = connect()
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO reminder_log (project_id, log_date) VALUES (?,?)",
+            (project_id, today))
+        c.commit()
+    finally:
+        c.close()
+
+    summary = {"ok": ok > 0, "sent_to": len(chat_ids), "ok_count": ok, "fail_count": fail}
+    if errors:
+        summary["errors"] = errors[:10]
+    return summary
+
+
+async def _reminder_tick(force: bool = False) -> dict:
+    """Run reminders for every project that has the flag on.
+
+    Called by the scheduler loop and by the manual admin trigger.  A single
+    project failing must not abort the rest.
+    """
+    today = _vn_now().date().isoformat()
+    c = connect()
+    try:
+        rows = c.execute(
+            "SELECT id, name, COALESCE(reminder_enabled,1) AS enabled FROM projects"
+        ).fetchall()
+    finally:
+        c.close()
+    results = {}
+    for p in rows:
+        pid = p["id"]
+        if not p["enabled"]:
+            continue
+        try:
+            results[str(pid)] = await send_reminder(pid, force=force)
+        except Exception as exc:
+            results[str(pid)] = {"ok": False, "error": f"L exception: {exc}"}
+    return {"ok": True, "date": today, "projects": results}
+
+
 async def send_photo(chat_id: str, photo_path: str = "", caption: str = "",
                      photo_bytes: bytes | None = None):
     """Send a photo to Telegram.
