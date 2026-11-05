@@ -1,43 +1,39 @@
 """Tests for existing-photo replace / delete / caption behavior."""
-import os
-import sys
-import hashlib
-import time
+import os, sys, hashlib, tempfile
 from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
+os.environ["SECRET_KEY"] = "test-secret"
 
-SECRET_KEY = "test-secret"
-os.environ["SECRET_KEY"] = SECRET_KEY
+import app.db as dbmod
+import app.main as mainmod
 
-import app.db as dbmod  # noqa: E402
-import app.main as mainmod  # noqa: E402
-
-DB_PATH = BASE / f"nhatky_test_{int(time.time())}.db"
+TMP = Path(tempfile.mkdtemp())
+DB_PATH = TMP / "nhatky_test.db"
+TEST_UPLOAD = TMP / "uploads"
 dbmod.DB_PATH = DB_PATH
 dbmod.IS_PG = False
-mainmod.UPLOAD_DIR = BASE / "uploads"
+mainmod.UPLOAD_DIR = TEST_UPLOAD
 
-from app.main import app, UPLOAD_DIR  # noqa: E402
-from app.auth import create_access_token  # noqa: E402
-from app.db import connect  # noqa: E402
+from app.main import app, UPLOAD_DIR
+from app.auth import create_access_token
+from app.db import connect
 
 
 @pytest.fixture(scope="module")
 def client():
+    if DB_PATH.exists():
+        DB_PATH.unlink()
     dbmod.init_db()
     c = connect()
     c.execute("INSERT INTO projects (name) VALUES (?)", ("Test Project",))
-    c.execute(
-        "INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
-        ("viewer", hashlib.sha256("pass".encode()).hexdigest(), "Viewer", "viewer"))
+    c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
+              ("viewer", hashlib.sha256("pass".encode()).hexdigest(), "Viewer", "viewer"))
     c.commit()
     c.close()
-
     token = create_access_token({"user_id": 1, "role": "viewer"})
     with TestClient(app) as tc:
         tc.cookies["access_token"] = token
@@ -46,22 +42,17 @@ def client():
 
 @pytest.fixture(autouse=True)
 def fresh_photo(client):
-    """Seed one existing photo + file per test, cleaned up afterwards."""
     os.makedirs(str(UPLOAD_DIR), exist_ok=True)
     name = "old_photo.png"
-    with open(UPLOAD_DIR / name, "wb") as f:
-        f.write(b"old-bytes")
+    (UPLOAD_DIR / name).write_bytes(b"old-bytes")
     c = connect()
-    c.execute("INSERT INTO diaries (project_id, date, total_workers) VALUES (?, ?, 0)",
-              (1, "2026-01-01"))
+    c.execute("INSERT INTO diaries (project_id, date, total_workers) VALUES (?, ?, 0)", (1, "2026-01-01"))
     did = c.execute("SELECT id FROM diaries WHERE project_id=1 AND date='2026-01-01'").fetchone()["id"]
-    c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
-              (did, name, "Old caption"))
+    c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)", (did, name, "Old caption"))
     c.commit()
     pid = c.execute("SELECT id FROM diary_photos WHERE filename=?", (name,)).fetchone()["id"]
     c.close()
     yield {"pid": pid, "diary_id": did, "name": name}
-    # cleanup (child rows before parent diary)
     c = connect()
     c.execute("DELETE FROM diary_photos WHERE diary_id=?", (did,))
     c.execute("DELETE FROM diary_labor WHERE diary_id=?", (did,))
@@ -73,7 +64,7 @@ def fresh_photo(client):
     c.close()
     for f in UPLOAD_DIR.glob("*.png"):
         try:
-            os.remove(f)
+            f.unlink()
         except OSError:
             pass
 
@@ -88,32 +79,25 @@ def _row(pid):
 
 
 def test_replace_existing_photo_keeps_record_and_removes_old(client, fresh_photo):
-    pid = fresh_photo
-    files = {"existing_photo_replace": ("new.png", b"new-bytes", "image/png")}
-    data = {
-        "date": "2026-01-01",
-        "existing_photo_ids": [str(pid)],
-        "existing_photo_captions": ["Replaced caption"],
-    }
+    pid = fresh_photo["pid"]
+    files = {f"existing_photo_replace_{pid}": ("new.png", b"new-bytes", "image/png")}
+    data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_captions": ["Replaced caption"]}
     r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
-
     row = _row(pid)
-    assert row is not None, "record must be kept (same id)"
+    assert row is not None
     assert row["caption"] == "Replaced caption"
     assert row["filename"] != "old_photo.png"
     assert (UPLOAD_DIR / row["filename"]).read_bytes() == b"new-bytes"
-    assert not (UPLOAD_DIR / "old_photo.png").exists(), "old file removed after successful write"
+    assert not (UPLOAD_DIR / "old_photo.png").exists()
 
 
 def test_replace_preserves_caption_when_none_given(client, fresh_photo):
-    pid = fresh_photo
-    files = {"existing_photo_replace": ("new2.png", b"new2", "image/png")}
-    data = {
-        "date": "2026-01-01",
-        "existing_photo_ids": [str(pid)],
-        "existing_photo_captions": [""],
-    }
+    pid = fresh_photo["pid"]
+    files = {f"existing_photo_replace_{pid}": ("new2.png", b"new2", "image/png")}
+    data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_captions": [""]}
     r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     row = _row(pid)
@@ -122,29 +106,22 @@ def test_replace_preserves_caption_when_none_given(client, fresh_photo):
 
 
 def test_delete_existing_photo_removes_record_and_file(client, fresh_photo):
-    pid = fresh_photo
+    pid = fresh_photo["pid"]
     old_name = _row(pid)["filename"]
     assert (UPLOAD_DIR / old_name).exists()
-    data = {
-        "date": "2026-01-01",
-        "existing_photo_ids": [],
-        "existing_photo_captions": [],
-    }
-    r = client.post("/projects/1/diary/save", data=data)
+    data = {"date": "2026-01-01", "existing_photo_ids": [], "existing_photo_captions": []}
+    r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     assert _row(pid) is None
     assert not (UPLOAD_DIR / old_name).exists()
 
 
 def test_keep_existing_photo_updates_caption_only(client, fresh_photo):
-    pid = fresh_photo
+    pid = fresh_photo["pid"]
     old_name = _row(pid)["filename"]
-    data = {
-        "date": "2026-01-01",
-        "existing_photo_ids": [str(pid)],
-        "existing_photo_captions": ["Updated caption"],
-    }
-    r = client.post("/projects/1/diary/save", data=data)
+    data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_captions": ["Updated caption"]}
+    r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     row = _row(pid)
     assert row["caption"] == "Updated caption"
@@ -152,16 +129,13 @@ def test_keep_existing_photo_updates_caption_only(client, fresh_photo):
 
 
 def test_edit_save_route_handles_replace_delete_caption(client, fresh_photo):
-    pid = fresh_photo
+    pid = fresh_photo["pid"]
+    did = fresh_photo["diary_id"]
     old_name = _row(pid)["filename"]
-    files = {"existing_photo_replace": ("edit_new.png", b"edit-new", "image/png")}
-    data = {
-        "date": "2026-01-01",
-        "existing_photo_ids": [str(pid)],
-        "existing_photo_captions": ["Edit caption"],
-    }
-    # Edit save route is /projects/{pid}/diary/{diary_id}/save
-    r = client.post("/projects/1/diary/1/save", data=data, files=files, follow_redirects=False)
+    files = {f"existing_photo_replace_{pid}": ("edit_new.png", b"edit-new", "image/png")}
+    data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_captions": ["Edit caption"]}
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     row = _row(pid)
     assert row["caption"] == "Edit caption"
@@ -170,15 +144,55 @@ def test_edit_save_route_handles_replace_delete_caption(client, fresh_photo):
     assert not (UPLOAD_DIR / old_name).exists()
 
 
+def test_replace_two_photos_keeps_each_correct(client, fresh_photo):
+    """Regression: the template renders two replace pickers per row, so a
+    flat getlist("existing_photo_replace") returns twice as many entries as
+    there are photos and an index-based pairing replaces the wrong photo."""
+    pid = fresh_photo["pid"]
+    # Seed a second existing photo in the same diary.
+    (UPLOAD_DIR / "second.png").write_bytes(b"second-bytes")
+    c = connect()
+    c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
+              (fresh_photo["diary_id"], "second.png", "Second caption"))
+    c.commit()
+    pid2 = c.execute("SELECT id FROM diary_photos WHERE filename='second.png'").fetchone()["id"]
+    c.close()
+    try:
+        files = {
+            f"existing_photo_replace_{pid}": ("rep1.png", b"rep1", "image/png"),
+            f"existing_photo_replace_{pid2}": ("rep2.png", b"rep2", "image/png"),
+        }
+        data = {
+            "date": "2026-01-01",
+            "existing_photo_ids": [str(pid), str(pid2)],
+            "existing_photo_captions": ["One", "Two"],
+        }
+        r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+        assert r.status_code == 302
+        r1, r2 = _row(pid), _row(pid2)
+        assert r1 is not None and r2 is not None
+        assert r1["caption"] == "One" and r2["caption"] == "Two"
+        assert (UPLOAD_DIR / r1["filename"]).read_bytes() == b"rep1"
+        assert (UPLOAD_DIR / r2["filename"]).read_bytes() == b"rep2"
+        assert not (UPLOAD_DIR / "old_photo.png").exists()
+        assert not (UPLOAD_DIR / "second.png").exists()
+    finally:
+        c = connect()
+        c.execute("DELETE FROM diary_photos WHERE diary_id=?", (fresh_photo["diary_id"],))
+        c.close()
+        for f in UPLOAD_DIR.glob("*.png"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
 def test_edit_save_route_deletes_existing_photo(client, fresh_photo):
-    pid = fresh_photo
+    pid = fresh_photo["pid"]
+    did = fresh_photo["diary_id"]
     old_name = _row(pid)["filename"]
-    data = {
-        "date": "2026-01-01",
-        "existing_photo_ids": [],
-        "existing_photo_captions": [],
-    }
-    r = client.post("/projects/1/diary/1/save", data=data)
+    data = {"date": "2026-01-01", "existing_photo_ids": [], "existing_photo_captions": []}
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     assert _row(pid) is None
     assert not (UPLOAD_DIR / old_name).exists()

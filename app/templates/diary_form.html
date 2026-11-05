@@ -93,14 +93,13 @@
     <p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">📋 Ảnh đã lưu:</p>
     {% for p in prev_photos %}
     <div class="form-row" style="margin-bottom:8px;align-items:center;gap:6px;flex-wrap:wrap;">
-      <img src="/uploads/{{ p.filename }}" style="width:50px;height:50px;object-fit:cover;border-radius:6px;cursor:pointer;" onclick="enlargePhoto('/uploads/{{ p.filename }}')">
+      <img id="photo-old-{{ p.id }}" src="/uploads/{{ p.filename }}" style="width:50px;height:50px;object-fit:cover;border-radius:6px;cursor:pointer;" onclick="enlargePhoto(this.src)" onerror="this.style.opacity='.35';this.title='Ảnh cũ không còn trên máy chủ; chọn ảnh mới để thay thế';">
       <input type="text" name="existing_photo_captions" value="{{ p.caption or '' }}" placeholder="Mô tả ảnh" style="flex:2;min-width:120px;">
       <input type="hidden" name="existing_photo_ids" value="{{ p.id }}">
-      <input type="file" name="existing_photo_replace" id="er-{{ p.id }}" accept="image/*" capture="environment" style="display:none;">
-      <input type="file" name="existing_photo_replace" id="eg-{{ p.id }}" accept="image/*" style="display:none;">
+      <input type="file" name="existing_photo_replace_{{ p.id }}" id="er-{{ p.id }}" accept="image/*" capture="environment" style="display:none;">
+      <input type="file" name="existing_photo_replace_{{ p.id }}" id="eg-{{ p.id }}" accept="image/*" style="display:none;">
       <button type="button" class="btn sm" id="erg-{{ p.id }}" title="Thay ảnh từ thư viện">📁</button>
       <button type="button" class="btn sm" id="erc-{{ p.id }}" title="Chụp ảnh mới">📷</button>
-      <img id="erp-{{ p.id }}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;display:none;">
       <button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); removeExistingPhoto(this);">🗑️</button>
     </div>
     {% endfor %}
@@ -312,13 +311,17 @@ function wireExistingPhotoButtons() {
     const pid = btn.id.replace('erg-', '');
     const gInput = document.getElementById('eg-' + pid);
     const cInput = document.getElementById('er-' + pid);
-    const thumb = document.getElementById('erp-' + pid);
+    const thumb = document.getElementById('photo-old-' + pid);
     btn.onclick = function(e) { e.preventDefault(); gInput.click(); };
     document.getElementById('erc-' + pid).onclick = function(e) { e.preventDefault(); cInput.click(); };
     function showPreview(input) {
       if (input.files && input.files[0]) {
-        thumb.src = URL.createObjectURL(input.files[0]);
-        thumb.style.display = 'block';
+        const replacementUrl = URL.createObjectURL(input.files[0]);
+        thumb.src = replacementUrl;
+        thumb.style.opacity = '1';
+        thumb.title = 'Ảnh mới sẽ thay ảnh cũ sau khi lưu nhật ký';
+        const preview = document.getElementById('erp-' + pid);
+        if (preview) preview.remove();
       }
     }
     gInput.addEventListener('change', function() { showPreview(gInput); });

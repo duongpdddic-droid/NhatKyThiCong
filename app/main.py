@@ -216,21 +216,22 @@ def _add_timemark(image_path, text):
         print("Timemark error:", e)
 
 
-async def _queue_photo_replacements(c, diary_id, existing_ids, existing_replacements, existing_captions):
+async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions, form):
     """Apply existing-photo changes (delete / replace / caption) safely.
 
     Replacements are written to disk first and only committed to the DB
     (replacing the old filename) *before* the transaction commits; the old
     file is removed only after a successful commit. Returns a list of
     (old_path, new_path) pairs for deferred old-file cleanup.
+
+    The replacement file is looked up per photo id (form field
+    ``existing_photo_replace_<id>``) instead of by list index: the template
+    renders a gallery *and* a camera picker per row, so a flat
+    ``getlist("existing_photo_replace")`` returns twice as many entries as
+    there are photos and an index-based pairing silently replaces the wrong
+    photo once more than one existing photo is present.
     """
     kept_ids = {int(pid) for pid in existing_ids if pid}
-    replacements = {}
-    for i, pid in enumerate(existing_ids):
-        if i < len(existing_replacements):
-            f = existing_replacements[i]
-            if pid and f and getattr(f, "filename", ""):
-                replacements[int(pid)] = f
     deferred_old = []
     rows = c.execute("SELECT id, filename FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()
     for row in rows:
@@ -242,37 +243,39 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_replacem
         if not pid:
             continue
         pid = int(pid)
-        if pid in replacements:
-            f = replacements[pid]
-            row = c.execute("SELECT filename, diary_id, caption FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id)).fetchone()
-            if not row:
-                continue
+        row = c.execute("SELECT filename, diary_id, caption FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id)).fetchone()
+        if not row:
+            continue
+        # Pick the first non-empty uploaded file for this photo id (gallery or camera).
+        files = (form.getlist(f"existing_photo_replace_{pid}")
+                 + form.getlist(f"existing_photo_replace_{pid}_cam"))
+        f = next((x for x in files if x and getattr(x, "filename", "")), None)
+        submitted_caption = existing_captions[i] if i < len(existing_captions) else ""
+        if f:
             ext = Path(f.filename).suffix or ".jpg"
             fname = f"diary_{row['diary_id']}_{uuid.uuid4().hex[:8]}{ext}"
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
             new_path = UPLOAD_DIR / fname
             content = await f.read()
-            if not content:
+            if content:
+                with open(new_path, "wb") as fh:
+                    fh.write(content)
+                try:
+                    from datetime import datetime
+                    _add_timemark(str(new_path), datetime.now().strftime("%d/%m/%Y %H:%M"))
+                except Exception as te:
+                    print("Timemark error:", te)
+                cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
+                c.execute("UPDATE diary_photos SET filename=?, caption=? WHERE id=? AND diary_id=?", (fname, cap, pid, diary_id))
+                deferred_old.append((_old_fpath(row["filename"]), str(new_path)))
                 continue
-            with open(new_path, "wb") as fh:
-                fh.write(content)
-            try:
-                from datetime import datetime
-                _add_timemark(str(new_path), datetime.now().strftime("%d/%m/%Y %H:%M"))
-            except Exception as te:
-                print("Timemark error:", te)
-            submitted_caption = existing_captions[i] if i < len(existing_captions) else ""
-            cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
-            c.execute("UPDATE diary_photos SET filename=?, caption=? WHERE id=? AND diary_id=?", (fname, cap, pid, diary_id))
-            deferred_old.append((_old_fpath(row["filename"]), str(new_path)))
-        else:
-            cap = existing_captions[i] if i < len(existing_captions) else ""
-            c.execute("UPDATE diary_photos SET caption=? WHERE id=? AND diary_id=?", (cap, pid, diary_id))
+        cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
+        c.execute("UPDATE diary_photos SET caption=? WHERE id=? AND diary_id=?", (cap, pid, diary_id))
     return deferred_old
 
 
 def _old_fpath(filename):
-    return os.path.join(os.path.dirname(__file__), "..", "uploads", filename)
+    return os.path.join(str(UPLOAD_DIR), filename)
 
 
 def _cleanup_replaced_files(deferred_old):
@@ -418,10 +421,9 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
 
         # Update/delete/replace existing photos
         existing_ids = form.getlist("existing_photo_ids")
-        existing_replacements = form.getlist("existing_photo_replace")
         existing_captions = form.getlist("existing_photo_captions")
         deferred_old = await _queue_photo_replacements(
-                    c, diary_id, existing_ids, existing_replacements, existing_captions)
+                    c, diary_id, existing_ids, existing_captions, form)
 
         c.commit()
         _cleanup_replaced_files(deferred_old)
@@ -885,16 +887,16 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                           (diary_id, fname, caption))
 
         existing_ids = form.getlist("existing_photo_ids")
-        existing_replacements = form.getlist("existing_photo_replace")
         existing_captions = form.getlist("existing_photo_captions")
         deferred_old = await _queue_photo_replacements(
-                    c, diary_id, existing_ids, existing_replacements, existing_captions)
+                    c, diary_id, existing_ids, existing_captions, form)
 
         c.commit()
         _cleanup_replaced_files(deferred_old)
     finally:
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
+
 
 @app.get("/projects/{project_id}/diary/{diary_id}/preview", response_class=HTMLResponse)
 def diary_preview(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
