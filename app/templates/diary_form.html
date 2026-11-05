@@ -66,7 +66,7 @@
         <option value="{{ mt.id }}" data-name="{{ mt.name }}" data-unit="{{ mt.unit }}">{{ mt.name }} ({{ mt.unit }})</option>
         {% endfor %}
       </select>
-      <input type="number" step="0.5" id="machinery-hours" placeholder="Số giờ" min="0.5" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
+      <input type="number" step="1" id="machinery-hours" placeholder="Số lượng" min="1" style="flex:1;padding:8px;border:1px solid var(--border);border-radius:8px;">
       <button type="button" class="btn sm primary" onclick="event.preventDefault(); addMachinery(); return false;">+ Thêm</button>
     </div>
     <div id="machinery-list"></div>
@@ -204,7 +204,7 @@ function addMachinery() {
   const hoursInput = document.getElementById('machinery-hours');
   hoursInput.blur();
   const hours = hoursInput.value;
-  if (!sel.value || !hours) { alert('Chọn máy móc và nhập số giờ'); return; }
+  if (!sel.value || !hours) { alert('Chọn máy móc và nhập số lượng'); return; }
   addMachineryRow(sel.value, hours, false);
   sel.value = '';
   document.getElementById('machinery-hours').value = '';
@@ -221,7 +221,7 @@ function addMachineryRow(id, hours, isPrev) {
   div.style.marginBottom = '6px';
   div.innerHTML = `
     <span style="flex:2;">${name} (${unit})</span>
-    <input type="number" step="0.5" name="machinery_${id}" value="${hours}" min="0.5" style="flex:1;">
+    <input type="number" step="1" name="machinery_${id}" value="${hours}" min="1" style="flex:1;">
     <button type="button" class="btn sm" style="color:var(--danger);" onclick="this.parentElement.remove();updateMachineryIds();">✕</button>
   `;
   list.appendChild(div);

@@ -410,11 +410,14 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             if not mt_id_str:
                 continue
             mt_id = int(mt_id_str)
-            hours_str = form.get(f"machinery_{mt_id}", "0")
-            hours = float(hours_str) if hours_str and hours_str.strip() else 0.0
-            if hours > 0:
+            qty_str = form.get(f"machinery_{mt_id}", "0")
+            try:
+                qty = int(qty_str) if qty_str and qty_str.strip() else 0
+            except (ValueError, TypeError):
+                qty = 0
+            if qty > 0:
                 c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
-                          (diary_id, mt_id, hours))
+                          (diary_id, mt_id, qty))
         # Materials
         mat_names = form.getlist("mat_name")
         mat_units = form.getlist("mat_unit")
@@ -621,7 +624,7 @@ def add_labor(request: Request, user=Depends(require_role("admin")),
 
 @app.post("/admin/library/machinery/add")
 def add_machinery(request: Request, user=Depends(require_role("admin")),
-                  name: str = Form(...), unit: str = Form("giờ")):
+                  name: str = Form(...), unit: str = Form("máy")):
     c = connect()
     try:
         c.execute("INSERT OR IGNORE INTO machinery_types (name, unit) VALUES (?,?)", (name, unit))
@@ -877,11 +880,14 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             if not mt_id_str:
                 continue
             mt_id = int(mt_id_str)
-            hours_str = form.get(f"machinery_{mt_id}", "0")
-            hours = float(hours_str) if hours_str and hours_str.strip() else 0.0
-            if hours > 0:
+            qty_str = form.get(f"machinery_{mt_id}", "0")
+            try:
+                qty = int(qty_str) if qty_str and qty_str.strip() else 0
+            except (ValueError, TypeError):
+                qty = 0
+            if qty > 0:
                 c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
-                          (diary_id, mt_id, hours))
+                          (diary_id, mt_id, qty))
         mat_names = form.getlist("mat_name")
         mat_units = form.getlist("mat_unit")
         mat_qtys = form.getlist("mat_qty")

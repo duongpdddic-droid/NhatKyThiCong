@@ -23,7 +23,7 @@
 
   <h3>2. Máy móc</h3>
   <table style="width:100%;border-collapse:collapse;">
-    <tr style="background:#f1f5f9;"><th style="padding:6px;text-align:left;">Máy móc</th><th style="padding:6px;text-align:right;">Số giờ</th></tr>
+    <tr style="background:#f1f5f9;"><th style="padding:6px;text-align:left;">Máy móc</th><th style="padding:6px;text-align:right;">Số lượng</th></tr>
     {% for m in machinery %}{% if m.hours > 0 %}
     <tr><td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ m.name }}</td><td style="padding:6px;text-align:right;border-bottom:1px solid #e2e8f0;">{{ m.hours }}</td></tr>
     {% endif %}{% endfor %}

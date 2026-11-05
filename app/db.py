@@ -129,7 +129,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS machinery_types (
             id SERIAL PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
-            unit TEXT DEFAULT 'giờ',
+            unit TEXT DEFAULT 'máy',
             sort_order INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS diaries (
@@ -222,10 +222,10 @@ def init_db():
                 c.execute("INSERT OR IGNORE INTO labor_types (name, unit, sort_order) VALUES (?,?,?)",
                           (name, unit, order))
         machinery_seed = [
-            ("Máy xúc", "giờ", 1), ("Máy trộn bê tông", "giờ", 2),
-            ("Cần cẩu", "giờ", 3), ("Máy đầm", "giờ", 4),
-            ("Máy bơm nước", "giờ", 5), ("Máy cắt", "giờ", 6),
-            ("Xe tải", "giờ", 7), ("Máy hàn", "giờ", 8),
+            ("Máy xúc", "máy", 1), ("Máy trộn bê tông", "máy", 2),
+            ("Cần cẩu", "máy", 3), ("Máy đầm", "máy", 4),
+            ("Máy bơm nước", "máy", 5), ("Máy cắt", "máy", 6),
+            ("Xe tải", "máy", 7), ("Máy hàn", "máy", 8),
         ]
         for name, unit, order in machinery_seed:
             if IS_PG:
@@ -234,6 +234,8 @@ def init_db():
             else:
                 c.execute("INSERT OR IGNORE INTO machinery_types (name, unit, sort_order) VALUES (?,?,?)",
                           (name, unit, order))
+        # Migrate legacy 'giờ' unit to 'máy' for existing library entries.
+        c.execute("UPDATE machinery_types SET unit='máy' WHERE unit='giờ'")
         import hashlib
         # Only create admin if not exists (never overwrite password)
         existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()

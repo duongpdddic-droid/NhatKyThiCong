@@ -133,7 +133,7 @@ async def send_diary_report(project_id: int, diary_id: int):
     lines.append("<b>Máy móc:</b>")
     for m in machinery:
         if m["hours"] > 0:
-            lines.append(f"  • {m['name']}: {m['hours']} giờ")
+            lines.append(f"  • {m['name']}: {m['hours']} máy")
     if diary.get("notes"):
         lines.append(f"\n📝 Ghi chú: {diary['notes']}")
     if diary.get("issues") and diary["issues"].strip():

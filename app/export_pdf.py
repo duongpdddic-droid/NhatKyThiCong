@@ -117,7 +117,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
 
     # Machinery
     story.append(Paragraph("2. MÁY MÓC THIẾT BỊ", h2_style))
-    mach_data = [["Máy móc", "Số giờ"]]
+    mach_data = [["Máy móc", "Số lượng"]]
     for m in machinery:
         if m["hours"] > 0:
             mach_data.append([m["name"], str(m["hours"])])
