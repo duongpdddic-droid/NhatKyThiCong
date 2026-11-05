@@ -225,6 +225,13 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         raise
     diary_date = form.get("date")
     weather_temp = form.get("weather_temp")
+    if weather_temp == "":
+        weather_temp = None
+    else:
+        try:
+            weather_temp = float(weather_temp)
+        except (ValueError, TypeError):
+            weather_temp = None
     weather_desc = form.get("weather_desc")
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
@@ -236,7 +243,7 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
     for key, val in form.items():
         if key.startswith("labor_") and key != "labor_ids":
             try:
-                total_workers += int(val or 0)
+                total_workers += int(val) if val and val.strip() else 0
             except ValueError:
                 pass
 
@@ -286,7 +293,8 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             if not mt_id_str:
                 continue
             mt_id = int(mt_id_str)
-            hours = float(form.get(f"machinery_{mt_id}", 0) or 0)
+            hours_str = form.get(f"machinery_{mt_id}", "0")
+            hours = float(hours_str) if hours_str and hours_str.strip() else 0.0
             if hours > 0:
                 c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
                           (diary_id, mt_id, hours))
@@ -298,7 +306,7 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             if name.strip():
                 c.execute("INSERT INTO diary_materials (diary_id, name, unit, quantity) VALUES (?,?,?,?)",
                           (diary_id, name, mat_units[i] if i < len(mat_units) else "",
-                           float(mat_qtys[i] or 0) if i < len(mat_qtys) else 0))
+                           float(mat_qtys[i]) if i < len(mat_qtys) and mat_qtys[i] and mat_qtys[i].strip() else 0))
         # Tasks
         task_names = form.getlist("task_name")
         task_qtys = form.getlist("task_qty")
@@ -308,9 +316,9 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             if name.strip():
                 c.execute("INSERT INTO diary_tasks (diary_id, task_name, quantity, unit, cumulative_pct) VALUES (?,?,?,?,?)",
                           (diary_id, name,
-                           float(task_qtys[i] or 0) if i < len(task_qtys) else 0,
+                           float(task_qtys[i]) if i < len(task_qtys) and task_qtys[i] and task_qtys[i].strip() else 0,
                            task_units[i] if i < len(task_units) else "",
-                           float(task_pcts[i] or 0) if i < len(task_pcts) else 0))
+                           float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
 
         # Photos with captions
         files = form.getlist("photos")
@@ -705,6 +713,13 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     form = await request.form()
     diary_date = form.get("date", "")
     weather_temp = form.get("weather_temp")
+    if weather_temp == "":
+        weather_temp = None
+    else:
+        try:
+            weather_temp = float(weather_temp)
+        except (ValueError, TypeError):
+            weather_temp = None
     weather_desc = form.get("weather_desc")
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
@@ -716,7 +731,7 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     for key, val in form.items():
         if key.startswith("labor_") and key != "labor_ids":
             try:
-                total_workers += int(val or 0)
+                total_workers += int(val) if val and val.strip() else 0
             except ValueError:
                 pass
 
@@ -746,7 +761,8 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             if not mt_id_str:
                 continue
             mt_id = int(mt_id_str)
-            hours = float(form.get(f"machinery_{mt_id}", 0) or 0)
+            hours_str = form.get(f"machinery_{mt_id}", "0")
+            hours = float(hours_str) if hours_str and hours_str.strip() else 0.0
             if hours > 0:
                 c.execute("INSERT INTO diary_machinery (diary_id, machinery_type_id, hours) VALUES (?,?,?)",
                           (diary_id, mt_id, hours))
@@ -757,7 +773,7 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             if name.strip():
                 c.execute("INSERT INTO diary_materials (diary_id, name, unit, quantity) VALUES (?,?,?,?)",
                           (diary_id, name, mat_units[i] if i < len(mat_units) else "",
-                           float(mat_qtys[i] or 0) if i < len(mat_qtys) else 0))
+                           float(mat_qtys[i]) if i < len(mat_qtys) and mat_qtys[i] and mat_qtys[i].strip() else 0))
         task_names = form.getlist("task_name")
         task_qtys = form.getlist("task_qty")
         task_units = form.getlist("task_unit")
@@ -766,9 +782,9 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             if name.strip():
                 c.execute("INSERT INTO diary_tasks (diary_id, task_name, quantity, unit, cumulative_pct) VALUES (?,?,?,?,?)",
                           (diary_id, name,
-                           float(task_qtys[i] or 0) if i < len(task_qtys) else 0,
+                           float(task_qtys[i]) if i < len(task_qtys) and task_qtys[i] and task_qtys[i].strip() else 0,
                            task_units[i] if i < len(task_units) else "",
-                           float(task_pcts[i] or 0) if i < len(task_pcts) else 0))
+                           float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
 
         files = form.getlist("photos")
         captions = form.getlist("photo_captions")
