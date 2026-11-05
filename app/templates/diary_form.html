@@ -247,10 +247,10 @@ function addPhotoInput(mode) {
     '<input type="text" name="photo_captions" placeholder="Mo ta anh" style="flex:2;">' +
     '<button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); this.parentElement.remove();">Xoa</button>';
 
+  container.appendChild(div);
   // Attach click handlers after DOM insertion
   document.getElementById('btn-g-' + idx).onclick = function(e) { e.preventDefault(); document.getElementById('pg-' + idx).click(); };
   document.getElementById('btn-c-' + idx).onclick = function(e) { e.preventDefault(); document.getElementById('pc-' + idx).click(); };
-  container.appendChild(div);
   const gInput = document.getElementById('pg-' + idx);
   const cInput = document.getElementById('pc-' + idx);
   const thumb = document.getElementById('pt-' + idx);
@@ -269,7 +269,7 @@ function enlargePhoto(src) {
   document.getElementById('lightbox').style.display = 'flex';
 }
 
-function enlargePhoto(src) {
+
   document.getElementById('lightbox-img').src = src;
   document.getElementById('lightbox').style.display = 'flex';
 }

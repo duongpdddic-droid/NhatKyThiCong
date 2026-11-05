@@ -346,11 +346,27 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
 
-        # Update captions for existing photos
+        # Update/delete existing photos
         existing_ids = form.getlist("existing_photo_ids")
         existing_captions = form.getlist("existing_photo_captions")
+        kept_ids = [int(pid) for pid in existing_ids if pid]
+        # Delete photos not in kept list
+        all_photos = [r["id"] for r in c.execute("SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,))]
+        for pid in all_photos:
+            if pid not in kept_ids:
+                # Also delete file
+                import os as _os
+                row = c.execute("SELECT filename FROM diary_photos WHERE id=?", (pid,)).fetchone()
+                if row:
+                    fpath = _os.path.join(_os.path.dirname(__file__), "..", "uploads", row["filename"])
+                    try:
+                        _os.remove(fpath)
+                    except Exception:
+                        pass
+                c.execute("DELETE FROM diary_photos WHERE id=?", (pid,))
+        # Update captions for kept photos
         for i, pid in enumerate(existing_ids):
-            if pid:
+            if pid and int(pid) in kept_ids:
                 cap = existing_captions[i] if i < len(existing_captions) else ""
                 c.execute("UPDATE diary_photos SET caption=? WHERE id=?", (cap, int(pid)))
 
