@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import uuid
 from pathlib import Path
 from datetime import date, timedelta
 
@@ -215,6 +216,75 @@ def _add_timemark(image_path, text):
         print("Timemark error:", e)
 
 
+async def _queue_photo_replacements(c, diary_id, existing_ids, existing_replacements, existing_captions):
+    """Apply existing-photo changes (delete / replace / caption) safely.
+
+    Replacements are written to disk first and only committed to the DB
+    (replacing the old filename) *before* the transaction commits; the old
+    file is removed only after a successful commit. Returns a list of
+    (old_path, new_path) pairs for deferred old-file cleanup.
+    """
+    kept_ids = {int(pid) for pid in existing_ids if pid}
+    replacements = {}
+    for i, pid in enumerate(existing_ids):
+        if i < len(existing_replacements):
+            f = existing_replacements[i]
+            if pid and f and getattr(f, "filename", ""):
+                replacements[int(pid)] = f
+    deferred_old = []
+    rows = c.execute("SELECT id, filename FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()
+    for row in rows:
+        pid = int(row["id"])
+        if pid not in kept_ids:
+            c.execute("DELETE FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id))
+            deferred_old.append((_old_fpath(row["filename"]), ""))
+    for i, pid in enumerate(existing_ids):
+        if not pid:
+            continue
+        pid = int(pid)
+        if pid in replacements:
+            f = replacements[pid]
+            row = c.execute("SELECT filename, diary_id, caption FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id)).fetchone()
+            if not row:
+                continue
+            ext = Path(f.filename).suffix or ".jpg"
+            fname = f"diary_{row['diary_id']}_{uuid.uuid4().hex[:8]}{ext}"
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            new_path = UPLOAD_DIR / fname
+            content = await f.read()
+            if not content:
+                continue
+            with open(new_path, "wb") as fh:
+                fh.write(content)
+            try:
+                from datetime import datetime
+                _add_timemark(str(new_path), datetime.now().strftime("%d/%m/%Y %H:%M"))
+            except Exception as te:
+                print("Timemark error:", te)
+            submitted_caption = existing_captions[i] if i < len(existing_captions) else ""
+            cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
+            c.execute("UPDATE diary_photos SET filename=?, caption=? WHERE id=? AND diary_id=?", (fname, cap, pid, diary_id))
+            deferred_old.append((_old_fpath(row["filename"]), str(new_path)))
+        else:
+            cap = existing_captions[i] if i < len(existing_captions) else ""
+            c.execute("UPDATE diary_photos SET caption=? WHERE id=? AND diary_id=?", (cap, pid, diary_id))
+    return deferred_old
+
+
+def _old_fpath(filename):
+    return os.path.join(os.path.dirname(__file__), "..", "uploads", filename)
+
+
+def _cleanup_replaced_files(deferred_old):
+    """Remove old files only after the new ones are safely on disk."""
+    for old_path, new_path in deferred_old:
+        if not new_path or os.path.exists(new_path):
+            try:
+                os.remove(old_path)
+            except Exception:
+                pass
+
+
 @app.post("/projects/{project_id}/diary/save")
 async def diary_save(request: Request, project_id: int, user=Depends(require_user)):
     import traceback
@@ -320,9 +390,6 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                            task_units[i] if i < len(task_units) else "",
                            float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
 
-        # Capture existing photo IDs before inserting new ones
-        existing_photo_ids_before = [r["id"] for r in c.execute("SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,))]
-
         # Photos with captions
         files = form.getlist("photos")
         captions = form.getlist("photo_captions")
@@ -349,30 +416,15 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
 
-        # Update/delete existing photos
+        # Update/delete/replace existing photos
         existing_ids = form.getlist("existing_photo_ids")
+        existing_replacements = form.getlist("existing_photo_replace")
         existing_captions = form.getlist("existing_photo_captions")
-        kept_ids = [int(pid) for pid in existing_ids if pid]
-        # Delete photos not in kept list
-        for pid in existing_photo_ids_before:
-            if pid not in kept_ids:
-                # Also delete file
-                import os as _os
-                row = c.execute("SELECT filename FROM diary_photos WHERE id=?", (pid,)).fetchone()
-                if row:
-                    fpath = _os.path.join(_os.path.dirname(__file__), "..", "uploads", row["filename"])
-                    try:
-                        _os.remove(fpath)
-                    except Exception:
-                        pass
-                c.execute("DELETE FROM diary_photos WHERE id=?", (pid,))
-        # Update captions for kept photos
-        for i, pid in enumerate(existing_ids):
-            if pid and int(pid) in kept_ids:
-                cap = existing_captions[i] if i < len(existing_captions) else ""
-                c.execute("UPDATE diary_photos SET caption=? WHERE id=?", (cap, int(pid)))
+        deferred_old = await _queue_photo_replacements(
+                    c, diary_id, existing_ids, existing_replacements, existing_captions)
 
         c.commit()
+        _cleanup_replaced_files(deferred_old)
     finally:
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
@@ -832,7 +884,14 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                 c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
                           (diary_id, fname, caption))
 
+        existing_ids = form.getlist("existing_photo_ids")
+        existing_replacements = form.getlist("existing_photo_replace")
+        existing_captions = form.getlist("existing_photo_captions")
+        deferred_old = await _queue_photo_replacements(
+                    c, diary_id, existing_ids, existing_replacements, existing_captions)
+
         c.commit()
+        _cleanup_replaced_files(deferred_old)
     finally:
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)

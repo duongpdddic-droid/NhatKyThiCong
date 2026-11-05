@@ -92,11 +92,16 @@
     {% if prev_photos %}
     <p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">📋 Ảnh đã lưu:</p>
     {% for p in prev_photos %}
-    <div class="form-row" style="margin-bottom:8px;align-items:center;gap:8px;">
+    <div class="form-row" style="margin-bottom:8px;align-items:center;gap:6px;flex-wrap:wrap;">
       <img src="/uploads/{{ p.filename }}" style="width:50px;height:50px;object-fit:cover;border-radius:6px;cursor:pointer;" onclick="enlargePhoto('/uploads/{{ p.filename }}')">
-      <input type="text" name="existing_photo_captions" value="{{ p.caption or '' }}" placeholder="Mô tả ảnh" style="flex:2;">
+      <input type="text" name="existing_photo_captions" value="{{ p.caption or '' }}" placeholder="Mô tả ảnh" style="flex:2;min-width:120px;">
       <input type="hidden" name="existing_photo_ids" value="{{ p.id }}">
-      <button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); this.parentElement.remove();">🗑️</button>
+      <input type="file" name="existing_photo_replace" id="er-{{ p.id }}" accept="image/*" capture="environment" style="display:none;">
+      <input type="file" name="existing_photo_replace" id="eg-{{ p.id }}" accept="image/*" style="display:none;">
+      <button type="button" class="btn sm" id="erg-{{ p.id }}" title="Thay ảnh từ thư viện">📁</button>
+      <button type="button" class="btn sm" id="erc-{{ p.id }}" title="Chụp ảnh mới">📷</button>
+      <img id="erp-{{ p.id }}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;display:none;">
+      <button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); removeExistingPhoto(this);">🗑️</button>
     </div>
     {% endfor %}
     {% endif %}
@@ -300,5 +305,32 @@ function calcWorkers() {
 document.addEventListener('input', (e) => {
   if (e.target.name && e.target.name.startsWith('labor_')) calcWorkers();
 });
+
+// Wire up existing-photo replace buttons (rows rendered server-side)
+function wireExistingPhotoButtons() {
+  document.querySelectorAll('[id^="erg-"]').forEach(btn => {
+    const pid = btn.id.replace('erg-', '');
+    const gInput = document.getElementById('eg-' + pid);
+    const cInput = document.getElementById('er-' + pid);
+    const thumb = document.getElementById('erp-' + pid);
+    btn.onclick = function(e) { e.preventDefault(); gInput.click(); };
+    document.getElementById('erc-' + pid).onclick = function(e) { e.preventDefault(); cInput.click(); };
+    function showPreview(input) {
+      if (input.files && input.files[0]) {
+        thumb.src = URL.createObjectURL(input.files[0]);
+        thumb.style.display = 'block';
+      }
+    }
+    gInput.addEventListener('change', function() { showPreview(gInput); });
+    cInput.addEventListener('change', function() { showPreview(cInput); });
+  });
+}
+
+function removeExistingPhoto(btn) {
+  const row = btn.closest('.form-row');
+  if (row) row.remove();
+}
+
+window.addEventListener('load', wireExistingPhotoButtons);
 </script>
 {% endblock %}
