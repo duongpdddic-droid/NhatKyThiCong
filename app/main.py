@@ -422,9 +422,13 @@ def admin_settings_save(request: Request, user=Depends(require_role("admin")),
 
 
 @app.get("/api/weather")
-async def weather_proxy(lat: float = 21.0, lon: float = 105.8):
+async def weather_proxy(lat: float = 21.0, lon: float = 105.8, date: str = None):
     import httpx
-    # Read API key from settings DB first, then env
+    from datetime import date as d, datetime
+    # Only fetch weather if diary date is today (free API limitation)
+    target = date or d.today().isoformat()
+    if target != d.today().isoformat():
+        return {"temp": None, "desc": "Nhập thủ công (ngày khác hôm nay)", "icon": ""}
     api_key = os.getenv("OPENWEATHER_API_KEY", "")
     try:
         c = connect()

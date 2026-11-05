@@ -275,15 +275,17 @@ function enlargePhoto(src) {
 }
 
 function loadWeather() {
+  const dateInput = document.querySelector('input[name="date"]');
+  const diaryDate = dateInput ? dateInput.value : '';
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(async (pos) => {
-      const r = await fetch(`/api/weather?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`);
+      const r = await fetch(`/api/weather?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}&date=${diaryDate}`);
       const d = await r.json();
       if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
       document.getElementById('weather_desc').value = d.desc;
     });
   } else {
-    fetch('/api/weather').then(r=>r.json()).then(d => {
+    fetch(`/api/weather?date=${diaryDate}`).then(r=>r.json()).then(d => {
       if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
       document.getElementById('weather_desc').value = d.desc;
     });
