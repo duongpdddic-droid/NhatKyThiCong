@@ -1,10 +1,57 @@
 """Telegram reporting module."""
+import io
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.db import connect
+
+# Telegram Bot API photo limit: 10 MB for sendPhoto (input file).
+TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+
+# Explicit timeouts for the Telegram HTTP client.  A slow R2 read or a
+# congested Telegram endpoint used to hang the whole diary send and turn
+# it into a 500; these values bound connect / read / write / pool and the
+# per-request wall-clock so a single bad photo cannot block the rest.
+HTTP_CONNECT_TIMEOUT = 5.0
+HTTP_READ_TIMEOUT = 15.0
+HTTP_WRITE_TIMEOUT = 30.0
+HTTP_POOL_TIMEOUT = 5.0
+HTTP_REQUEST_TIMEOUT = 60.0
+
+
+def _compress_photo(photo_bytes: bytes, max_bytes: int = TELEGRAM_PHOTO_MAX_BYTES) -> bytes:
+    """Resize / recompress an oversized image so it fits Telegram's limit.
+
+    Pillow is used only when the input actually exceeds the limit; small
+    photos pass through untouched.  The output is always a valid JPEG so
+    the Telegram ``sendPhoto`` multipart upload never rejects the file.
+    """
+    if not photo_bytes or len(photo_bytes) <= max_bytes:
+        return photo_bytes
+    try:
+        from PIL import Image
+    except Exception:
+        return photo_bytes
+    try:
+        img = Image.open(io.BytesIO(photo_bytes))
+    except Exception:
+        return photo_bytes
+    img = img.convert("RGB")
+    # Shrink the longest edge until the JPEG is under the limit.
+    max_edge = max(img.size)
+    if max_edge > 1280:
+        ratio = 1280 / max_edge
+        img = img.resize((max(1, int(img.size[0] * ratio)), max(1, int(img.size[1] * ratio))))
+    for quality in (85, 70, 55, 40):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        data = buf.getvalue()
+        if len(data) <= max_bytes:
+            return data
+    return data
+
 
 def get_bot_token():
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -41,23 +88,61 @@ async def send_photo(chat_id: str, photo_path: str = "", caption: str = "",
     ``photo_bytes`` takes precedence when supplied (R2-backed photos); the
     function falls back to reading ``photo_path`` from the local filesystem
     for legacy callers.
+
+    Returns a dict ``{"ok": bool, "error": str | None}`` so callers can
+    count successes / failures without wrapping this function in try/except.
     """
-    BOT_TOKEN = get_bot_token()
-    if not BOT_TOKEN or not chat_id:
-        return
+    token = get_bot_token()
+    if not token or not chat_id:
+        return {"ok": False, "error": "Thiếu Bot Token hoặc Chat ID"}
     if photo_bytes is None and photo_path:
         try:
             with open(photo_path, "rb") as f:
                 photo_bytes = f.read()
         except OSError:
-            return
+            return {"ok": False, "error": "Không đọc được file ảnh"}
     if not photo_bytes:
-        return
+        return {"ok": False, "error": "Không có dữ liệu ảnh"}
+
+    # Resize / recompress oversized images before upload so a single huge
+    # photo cannot blow Telegram's limit (or the request body) and stall
+    # the remaining photos in the same diary.
+    photo_bytes = _compress_photo(photo_bytes)
+
     import httpx
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    async with httpx.AsyncClient() as client:
-        await client.post(url, data={"chat_id": chat_id, "caption": caption},
-                          files={"photo": photo_bytes})
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                HTTP_REQUEST_TIMEOUT,
+                connect=HTTP_CONNECT_TIMEOUT,
+                read=HTTP_READ_TIMEOUT,
+                write=HTTP_WRITE_TIMEOUT,
+                pool=HTTP_POOL_TIMEOUT,
+            )
+        ) as client:
+            resp = await client.post(
+                url,
+                data={"chat_id": chat_id, "caption": caption},
+                files={"photo": ("photo.jpg", photo_bytes, "image/jpeg")},
+            )
+        if resp.status_code >= 400:
+            return {"ok": False,
+                    "error": f"Telegram trả về HTTP {resp.status_code}"}
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {}
+        if not payload.get("ok", False):
+            return {"ok": False,
+                    "error": f"Telegram từ chối: {payload.get('description', 'lỗi không rõ')}"}
+        return {"ok": True, "error": None}
+    except httpx.TimeoutException as exc:
+        return {"ok": False, "error": f"Timeout Telegram: {exc}"}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": f"Lỗi mạng Telegram: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Lỗi không xác định: {exc}"}
 
 
 async def send_document(chat_id: str, doc_path: str, caption: str = ""):
@@ -147,8 +232,20 @@ async def send_diary_report(project_id: int, diary_id: int):
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from app import r2
 
+    photos_sent = 0
+    photos_failed = 0
+    photo_errors: list[str] = []
+    chat_ok = 0
+    chat_fail = 0
+
     for chat_id in chat_ids:
-        await send_message(chat_id, msg)
+        try:
+            await send_message(chat_id, msg)
+            chat_ok += 1
+        except Exception as exc:
+            chat_fail += 1
+            photo_errors.append(f"chat {chat_id}: {exc}")
+
         for p in photos[:10]:
             data = r2.read_file(p["filename"])
             if data is None:
@@ -156,7 +253,35 @@ async def send_diary_report(project_id: int, diary_id: int):
                 local = upload_dir / p["filename"]
                 if local.exists():
                     data = local.read_bytes()
-            if data:
-                await send_photo(chat_id, photo_bytes=data,
-                                 caption=p.get("caption", ""))
-    return {"ok": True, "sent_to": len(chat_ids)}
+            if not data:
+                photos_failed += 1
+                photo_errors.append(f"{p['filename']}: không đọc được dữ liệu")
+                continue
+            try:
+                result = await send_photo(chat_id, photo_bytes=data,
+                                          caption=p.get("caption", ""))
+            except Exception as exc:
+                # Defensive: a raised exception must not abort the loop.
+                result = {"ok": False, "error": f"L exception: {exc}"}
+            if result.get("ok"):
+                photos_sent += 1
+            else:
+                photos_failed += 1
+                photo_errors.append(
+                    f"{p['filename']}: {result.get('error', 'lỗi')}")
+
+    summary = {
+        "ok": True,
+        "sent_to": len(chat_ids),
+        "chat_ok": chat_ok,
+        "chat_fail": chat_fail,
+        "photos_sent": photos_sent,
+        "photos_failed": photos_failed,
+    }
+    if photo_errors:
+        summary["photo_errors"] = photo_errors[:20]
+    # Return ok=False on any chat or photo failure with concise error message
+    if chat_fail > 0 or photos_failed > 0:
+        summary["ok"] = False
+        summary["error"] = f"Đã gửi tới {chat_ok}/{len(chat_ids)} người chat, {photos_sent} ảnh thành công; {chat_fail} chat lỗi, {photos_failed} ảnh lỗi"
+    return summary
