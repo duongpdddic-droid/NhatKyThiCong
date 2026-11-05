@@ -49,7 +49,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         tasks = [dict(r) for r in c.execute(
             "SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
         photos = [dict(r) for r in c.execute(
-            "SELECT filename FROM diary_photos WHERE diary_id=?", (diary_id,))]
+                    "SELECT filename, caption FROM diary_photos WHERE diary_id=?", (diary_id,))]
     finally:
         c.close()
 
@@ -149,6 +149,8 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
                 try:
                     img = Image(str(img_path), width=8*cm, height=6*cm)
                     story.append(img)
+                    if p.get("caption"):
+                        story.append(Paragraph(p["caption"], normal))
                     story.append(Spacer(1, 0.2*cm))
                 except Exception:
                     pass

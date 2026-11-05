@@ -66,7 +66,7 @@
     {% for p in photos %}
     <div>
       <img src="/uploads/{{ p.filename }}" style="width:100%;border-radius:8px;">
-      <div style="font-size:11px;color:var(--muted);">{{ p.caption or '' }}</div>
+      <div style="font-size:11px;color:var(--muted);word-break:break-word;white-space:normal;">{{ p.caption or '' }}</div>
     </div>
     {% endfor %}
   </div>
