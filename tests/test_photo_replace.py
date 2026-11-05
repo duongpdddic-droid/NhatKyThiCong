@@ -104,6 +104,7 @@ def test_replace_preserves_caption_when_none_given(client, fresh_photo):
     assert r.status_code == 302
     row = _row(pid)
     assert row["filename"] != "old_photo.png"
+    assert row["caption"] == "Old caption"
     assert (UPLOAD_DIR / row["filename"]).read_bytes() == b"new2"
 
 
@@ -190,6 +191,82 @@ def test_replace_two_photos_keeps_each_correct(client, fresh_photo):
                 f.unlink()
             except OSError:
                 pass
+
+
+def test_new_photos_survive_without_existing_photo_mode(client, fresh_photo):
+    """Regression: a pure create must not delete just-uploaded photos.
+
+    The create route used to call _queue_photo_replacements unconditionally,
+    which deleted every photo not listed in existing_photo_ids (empty on a
+    pure create) — including the ones just inserted in the same request.
+    """
+    did = fresh_photo["diary_id"]
+    files = [("photos", ("new_a.png", b"new-a", "image/png")),
+             ("photos", ("new_b.png", b"new-b", "image/png"))]
+    data = {"date": "2026-01-01"}
+    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    assert r.status_code == 302
+    rows = [dict(x) for x in connect().execute(
+        "SELECT * FROM diary_photos WHERE diary_id=?", (did,)).fetchall()]
+    assert len(rows) == 3
+    names = {row["filename"] for row in rows}
+    assert len(names) == 3
+    for row in rows:
+        if row["filename"] != "old_photo.png":
+            assert (UPLOAD_DIR / row["filename"]).read_bytes() in (b"new-a", b"new-b")
+    # The pre-existing photo must also be untouched (no existing_photo_mode).
+    old = _row(fresh_photo["pid"])
+    assert old is not None
+    assert old["filename"] == "old_photo.png"
+
+
+def test_new_and_replace_together_keeps_both(client, fresh_photo):
+    """Regression: replacing an existing photo must not delete a new upload
+    in the same request, and the replaced old file is removed only after the
+    new one is written."""
+    pid = fresh_photo["pid"]
+    did = fresh_photo["diary_id"]
+    old_name = _row(pid)["filename"]
+    files = [
+        (f"existing_photo_replace_{pid}", ("rep.png", b"rep-bytes", "image/png")),
+        ("photos", ("brand_new.png", b"brand-new", "image/png")),
+    ]
+    data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_captions": ["Replaced"], "existing_photo_mode": "1"}
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, files=files, follow_redirects=False)
+    assert r.status_code == 302
+    rep = _row(pid)
+    assert rep is not None
+    assert rep["caption"] == "Replaced"
+    assert rep["filename"] != old_name
+    assert (UPLOAD_DIR / rep["filename"]).read_bytes() == b"rep-bytes"
+    assert not (UPLOAD_DIR / old_name).exists()
+    new_rows = [dict(x) for x in connect().execute(
+        "SELECT * FROM diary_photos WHERE diary_id=? AND id!=?",
+        (did, pid)).fetchall()]
+    assert len(new_rows) == 1
+    assert (UPLOAD_DIR / new_rows[0]["filename"]).read_bytes() == b"brand-new"
+
+
+def test_new_photo_filenames_are_unique(client, fresh_photo):
+    """Acceptance: multiple new uploads in one request get distinct names."""
+    did = fresh_photo["diary_id"]
+    files = [("photos", ("a.png", b"aaa", "image/png")),
+             ("photos", ("b.png", b"bbb", "image/png")),
+             ("photos", ("c.png", b"ccc", "image/png"))]
+    data = {"date": "2026-01-01"}
+    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    assert r.status_code == 302
+    rows = [dict(x) for x in connect().execute(
+        "SELECT filename FROM diary_photos WHERE diary_id=?", (did,)).fetchall()]
+    names = [row["filename"] for row in rows]
+    # old_photo.png + 3 new, all distinct
+    assert "old_photo.png" in names
+    new_names = [n for n in names if n != "old_photo.png"]
+    assert len(new_names) == 3
+    assert len(set(new_names)) == 3
+    for n in new_names:
+        assert (UPLOAD_DIR / n).exists()
 
 
 def test_edit_save_route_deletes_existing_photo(client, fresh_photo):

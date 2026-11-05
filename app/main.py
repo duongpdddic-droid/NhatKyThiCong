@@ -216,7 +216,7 @@ def _add_timemark(image_path, text):
         print("Timemark error:", e)
 
 
-async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions, form):
+async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions, form, prior_ids=None):
     """Apply existing-photo changes (delete / replace / caption) safely.
 
     Replacements are written to disk first and only committed to the DB
@@ -224,18 +224,29 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
     file is removed only after a successful commit. Returns a list of
     (old_path, new_path) pairs for deferred old-file cleanup.
 
+    Only photos that already existed *before* this request are touched:
+    ``prior_ids`` is a snapshot of the diary's photo ids taken before the
+    route inserts any new uploads, so a photo just uploaded in the same
+    request is never deleted. When ``prior_ids`` is omitted (legacy call
+    sites) every current row is eligible for deletion.
+
     The replacement file is looked up per photo id (form field
     ``existing_photo_replace_<id>``) instead of by list index: the template
-    renders a gallery *and* a camera picker per row, so a flat
-    ``getlist("existing_photo_replace")`` returns twice as many entries as
-    there are photos and an index-based pairing silently replaces the wrong
-    photo once more than one existing photo is present.
+    renders a gallery *and* a camera picker per row, both sharing the same
+    per-id field name, so a flat ``getlist("existing_photo_replace")``
+    returns twice as many entries as there are photos and an index-based
+    pairing silently replaces the wrong photo once more than one existing
+    photo is present.
     """
     kept_ids = {int(pid) for pid in existing_ids if pid}
+    prior_set = set(prior_ids) if prior_ids is not None else None
     deferred_old = []
     rows = c.execute("SELECT id, filename FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()
     for row in rows:
         pid = int(row["id"])
+        # Never delete a photo that was just inserted in this request.
+        if prior_set is not None and pid not in prior_set:
+            continue
         if pid not in kept_ids:
             c.execute("DELETE FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id))
             deferred_old.append((_old_fpath(row["filename"]), ""))
@@ -246,14 +257,14 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
         row = c.execute("SELECT filename, diary_id, caption FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id)).fetchone()
         if not row:
             continue
-        # Pick the first non-empty uploaded file for this photo id (gallery or camera).
-        files = (form.getlist(f"existing_photo_replace_{pid}")
-                 + form.getlist(f"existing_photo_replace_{pid}_cam"))
+        # Pick the first non-empty uploaded file for this photo id (gallery
+        # and camera share the same per-id field name).
+        files = form.getlist(f"existing_photo_replace_{pid}")
         f = next((x for x in files if x and getattr(x, "filename", "")), None)
         submitted_caption = existing_captions[i] if i < len(existing_captions) else ""
         if f:
             ext = Path(f.filename).suffix or ".jpg"
-            fname = f"diary_{row['diary_id']}_{uuid.uuid4().hex[:8]}{ext}"
+            fname = f"diary_{row['diary_id']}_{uuid.uuid4().hex}{ext}"
             UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
             new_path = UPLOAD_DIR / fname
             content = await f.read()
@@ -394,12 +405,14 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
                            float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
 
         # Photos with captions
+        prior_ids = [r["id"] for r in c.execute(
+            "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         files = form.getlist("photos")
         captions = form.getlist("photo_captions")
         for i, f in enumerate(files):
             if f and f.filename:
                 ext = Path(f.filename).suffix
-                fname = f"diary_{diary_id}_{uuid.uuid4().hex[:8]}{ext}"
+                fname = f"diary_{diary_id}_{uuid.uuid4().hex}{ext}"
                 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
                 fpath = UPLOAD_DIR / fname
                 file_content = await f.read()
@@ -423,7 +436,7 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         existing_captions = form.getlist("existing_photo_captions")
         if "existing_photo_mode" in form:
             deferred_old = await _queue_photo_replacements(
-                        c, diary_id, existing_ids, existing_captions, form)
+                        c, diary_id, existing_ids, existing_captions, form, prior_ids)
         else:
             deferred_old = []
 
@@ -864,12 +877,14 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                            task_units[i] if i < len(task_units) else "",
                            float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
 
+        prior_ids = [r["id"] for r in c.execute(
+            "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         files = form.getlist("photos")
         captions = form.getlist("photo_captions")
         for i, f in enumerate(files):
             if f and f.filename:
                 ext = __import__("pathlib").Path(f.filename).suffix
-                fname = f"diary_{diary_id}_{uuid.uuid4().hex[:8]}{ext}"
+                fname = f"diary_{diary_id}_{uuid.uuid4().hex}{ext}"
                 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
                 fpath = UPLOAD_DIR / fname
                 file_content = await f.read()
@@ -891,7 +906,7 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         existing_captions = form.getlist("existing_photo_captions")
         if "existing_photo_mode" in form:
             deferred_old = await _queue_photo_replacements(
-                        c, diary_id, existing_ids, existing_captions, form)
+                        c, diary_id, existing_ids, existing_captions, form, prior_ids)
         else:
             deferred_old = []
 

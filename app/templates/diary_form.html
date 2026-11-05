@@ -7,7 +7,6 @@
 <form method="post" action="/projects/{{ project.id }}/diary/save" enctype="multipart/form-data">
 {% endif %}
   <input type="hidden" name="date" value="{{ target_date }}">
-  <input type="hidden" name="existing_photo_mode" value="1">
 
   <div class="section">
     <h2>§1 Thông tin chung</h2>
@@ -91,6 +90,7 @@
   <div class="section">
     <h2>§6 Ảnh hiện trường</h2>
     {% if prev_photos %}
+    <input type="hidden" name="existing_photo_mode" value="1">
     <p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">📋 Ảnh đã lưu:</p>
     {% for p in prev_photos %}
     <div class="form-row" style="margin-bottom:8px;align-items:center;gap:6px;flex-wrap:wrap;">
