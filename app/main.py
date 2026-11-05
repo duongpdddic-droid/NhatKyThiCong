@@ -23,6 +23,15 @@ from app.auth import (
 )
 
 app = FastAPI(title="Nhật ký thi công")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    import traceback
+    print("GLOBAL ERROR:", exc)
+    print(traceback.format_exc())
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(f"<pre>{traceback.format_exc()}</pre>", status_code=500)
+
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
 app.mount("/uploads", StaticFiles(directory=str(BASE_DIR / "uploads")), name="uploads")
@@ -208,7 +217,12 @@ def _add_timemark(image_path, text):
 
 @app.post("/projects/{project_id}/diary/save")
 async def diary_save(request: Request, project_id: int, user=Depends(require_user)):
-    form = await request.form()
+    import traceback
+    try:
+        form = await request.form()
+    except Exception as e:
+        print("Form parse error:", e, traceback.format_exc())
+        raise
     diary_date = form.get("date")
     weather_temp = form.get("weather_temp")
     weather_desc = form.get("weather_desc")
