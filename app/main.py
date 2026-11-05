@@ -399,9 +399,8 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         for i, f in enumerate(files):
             if f and f.filename:
                 ext = Path(f.filename).suffix
-                fname = f"diary_{diary_id}_{len(os.listdir(UPLOAD_DIR))}{ext}"
-                import os as _os
-                _os.makedirs(str(UPLOAD_DIR), exist_ok=True)
+                fname = f"diary_{diary_id}_{uuid.uuid4().hex[:8]}{ext}"
+                UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
                 fpath = UPLOAD_DIR / fname
                 file_content = await f.read()
                 if not file_content:
@@ -422,8 +421,11 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         # Update/delete/replace existing photos
         existing_ids = form.getlist("existing_photo_ids")
         existing_captions = form.getlist("existing_photo_captions")
-        deferred_old = await _queue_photo_replacements(
-                    c, diary_id, existing_ids, existing_captions, form)
+        if "existing_photo_mode" in form:
+            deferred_old = await _queue_photo_replacements(
+                        c, diary_id, existing_ids, existing_captions, form)
+        else:
+            deferred_old = []
 
         c.commit()
         _cleanup_replaced_files(deferred_old)
@@ -867,10 +869,9 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         for i, f in enumerate(files):
             if f and f.filename:
                 ext = __import__("pathlib").Path(f.filename).suffix
-                fname = f"diary_{diary_id}_{len(__import__('os').listdir(str(__import__('pathlib').Path(__file__).parent.parent / 'uploads')))}{ext}"
-                upload_dir = __import__("pathlib").Path(__file__).parent.parent / "uploads"
-                __import__("os").makedirs(str(upload_dir), exist_ok=True)
-                fpath = upload_dir / fname
+                fname = f"diary_{diary_id}_{uuid.uuid4().hex[:8]}{ext}"
+                UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                fpath = UPLOAD_DIR / fname
                 file_content = await f.read()
                 if not file_content:
                     continue
@@ -888,8 +889,11 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
 
         existing_ids = form.getlist("existing_photo_ids")
         existing_captions = form.getlist("existing_photo_captions")
-        deferred_old = await _queue_photo_replacements(
-                    c, diary_id, existing_ids, existing_captions, form)
+        if "existing_photo_mode" in form:
+            deferred_old = await _queue_photo_replacements(
+                        c, diary_id, existing_ids, existing_captions, form)
+        else:
+            deferred_old = []
 
         c.commit()
         _cleanup_replaced_files(deferred_old)

@@ -82,6 +82,7 @@ def test_replace_existing_photo_keeps_record_and_removes_old(client, fresh_photo
     pid = fresh_photo["pid"]
     files = {f"existing_photo_replace_{pid}": ("new.png", b"new-bytes", "image/png")}
     data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_mode": "1",
             "existing_photo_captions": ["Replaced caption"]}
     r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
@@ -97,6 +98,7 @@ def test_replace_preserves_caption_when_none_given(client, fresh_photo):
     pid = fresh_photo["pid"]
     files = {f"existing_photo_replace_{pid}": ("new2.png", b"new2", "image/png")}
     data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_mode": "1",
             "existing_photo_captions": [""]}
     r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
@@ -109,7 +111,7 @@ def test_delete_existing_photo_removes_record_and_file(client, fresh_photo):
     pid = fresh_photo["pid"]
     old_name = _row(pid)["filename"]
     assert (UPLOAD_DIR / old_name).exists()
-    data = {"date": "2026-01-01", "existing_photo_ids": [], "existing_photo_captions": []}
+    data = {"date": "2026-01-01", "existing_photo_ids": [], "existing_photo_captions": [], "existing_photo_mode": "1"}
     r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     assert _row(pid) is None
@@ -120,6 +122,7 @@ def test_keep_existing_photo_updates_caption_only(client, fresh_photo):
     pid = fresh_photo["pid"]
     old_name = _row(pid)["filename"]
     data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_mode": "1",
             "existing_photo_captions": ["Updated caption"]}
     r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
     assert r.status_code == 302
@@ -134,6 +137,7 @@ def test_edit_save_route_handles_replace_delete_caption(client, fresh_photo):
     old_name = _row(pid)["filename"]
     files = {f"existing_photo_replace_{pid}": ("edit_new.png", b"edit-new", "image/png")}
     data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
+            "existing_photo_mode": "1",
             "existing_photo_captions": ["Edit caption"]}
     r = client.post(f"/projects/1/diary/{did}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
@@ -165,6 +169,7 @@ def test_replace_two_photos_keeps_each_correct(client, fresh_photo):
         data = {
             "date": "2026-01-01",
             "existing_photo_ids": [str(pid), str(pid2)],
+            "existing_photo_mode": "1",
             "existing_photo_captions": ["One", "Two"],
         }
         r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
@@ -191,7 +196,7 @@ def test_edit_save_route_deletes_existing_photo(client, fresh_photo):
     pid = fresh_photo["pid"]
     did = fresh_photo["diary_id"]
     old_name = _row(pid)["filename"]
-    data = {"date": "2026-01-01", "existing_photo_ids": [], "existing_photo_captions": []}
+    data = {"date": "2026-01-01", "existing_photo_ids": [], "existing_photo_captions": [], "existing_photo_mode": "1"}
     r = client.post(f"/projects/1/diary/{did}/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     assert _row(pid) is None
