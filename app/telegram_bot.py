@@ -172,6 +172,17 @@ async def send_message(chat_id: str, text: str):
             resp = await client.post(
                 url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
         if resp.status_code >= 400:
+            description = None
+            try:
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    description = payload.get("description")
+            except Exception:
+                description = None
+            if description:
+                return {"ok": False,
+                        "error": sanitize_error(
+                            f"Telegram trả về HTTP {resp.status_code}: {description}")}
             return {"ok": False,
                     "error": f"Telegram trả về HTTP {resp.status_code}"}
         try:
@@ -381,6 +392,17 @@ async def send_photo(chat_id: str, photo_path: str = "", caption: str = "",
                 files={"photo": ("photo.jpg", photo_bytes, "image/jpeg")},
             )
         if resp.status_code >= 400:
+            description = None
+            try:
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    description = payload.get("description")
+            except Exception:
+                description = None
+            if description:
+                return {"ok": False,
+                        "error": sanitize_error(
+                            f"Telegram trả về HTTP {resp.status_code}: {description}")}
             return {"ok": False,
                     "error": f"Telegram trả về HTTP {resp.status_code}"}
         try:

@@ -430,3 +430,129 @@ def test_sanitize_error_redacts_bot_token():
         redacted = tb.sanitize_error(f"failed for bot{token} endpoint")
     assert token not in redacted
     assert "[REDACTED]" in redacted
+
+
+def test_send_message_http_400_includes_telegram_description():
+    from unittest.mock import MagicMock
+
+    async def fake_post(url, json=None):
+        return MagicMock(
+            status_code=400,
+            json=lambda: {"ok": False, "description": "Bad Request: chat not found"},
+        )
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_message("chat-1", "hi"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert "HTTP 400" in result["error"]
+    assert "chat not found" in result["error"]
+
+
+def test_send_message_http_400_invalid_json_falls_back_safely():
+    from unittest.mock import MagicMock
+
+    async def fake_post(url, json=None):
+        resp = MagicMock(status_code=400)
+        resp.json.side_effect = ValueError("not json")
+        return resp
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_message("chat-1", "hi"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert "HTTP 400" in result["error"]
+
+
+def test_send_message_http_400_redacts_token_in_description():
+    from unittest.mock import MagicMock
+
+    token = "123:SECRET"
+
+    async def fake_post(url, json=None):
+        return MagicMock(
+            status_code=400,
+            json=lambda: {"ok": False, "description": f"bad token {token}"},
+        )
+
+    with patch.object(tb, "get_bot_token", return_value=token), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_message("chat-1", "hi"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert token not in result["error"]
+    assert "[REDACTED]" in result["error"]
+
+
+def test_send_photo_http_400_includes_telegram_description():
+    from unittest.mock import MagicMock
+
+    async def fake_post(url, data=None, files=None):
+        return MagicMock(
+            status_code=400,
+            json=lambda: {"ok": False, "description": "Bad Request: wrong file format"},
+        )
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_photo("chat-1", photo_bytes=b"x", caption="c"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert "HTTP 400" in result["error"]
+    assert "wrong file format" in result["error"]
+
+
+def test_send_photo_http_400_invalid_json_falls_back_safely():
+    from unittest.mock import MagicMock
+
+    async def fake_post(url, data=None, files=None):
+        resp = MagicMock(status_code=400)
+        resp.json.side_effect = ValueError("not json")
+        return resp
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_photo("chat-1", photo_bytes=b"x", caption="c"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert "HTTP 400" in result["error"]
+
+
+def test_send_photo_http_400_redacts_token_in_description():
+    from unittest.mock import MagicMock
+
+    token = "123:SECRET"
+
+    async def fake_post(url, data=None, files=None):
+        return MagicMock(
+            status_code=400,
+            json=lambda: {"ok": False, "description": f"bad token {token}"},
+        )
+
+    with patch.object(tb, "get_bot_token", return_value=token), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_photo("chat-1", photo_bytes=b"x", caption="c"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert token not in result["error"]
+    assert "[REDACTED]" in result["error"]
