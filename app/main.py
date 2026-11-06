@@ -567,7 +567,8 @@ async def test_telegram():
             return {"ok": True, "bot": data["result"]["username"]}
         return {"ok": False, "error": data.get("description", "Token sai")}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        from app.telegram_bot import sanitize_error
+        return {"ok": False, "error": sanitize_error(e)}
 
 
 @app.get("/admin/settings", response_class=HTMLResponse)
@@ -1043,12 +1044,20 @@ async def send_telegram(request: Request, project_id: int, diary_id: int, user=D
     try:
         result = await send_diary_report(project_id, diary_id)
     except Exception as exc:
+        from app.telegram_bot import sanitize_error
         return RedirectResponse(
-            url=f"/projects/{project_id}?tg_error={quote(str(exc))}", status_code=302)
+            url=f"/projects/{project_id}?tg_error={quote(sanitize_error(exc))}", status_code=302)
     if result and not result.get("ok"):
-        # Redirect with readable error message (never 500).
+        from app.telegram_bot import sanitize_error
+        # Redirect with readable error message (never 500).  Include the
+        # concise provider-error details so a bad chat id or missing R2
+        # object can be told apart in the UI alert.
+        err = str(result.get("error") or "Lỗi")
+        details = result.get("details")
+        if details:
+            err = f"{err} | {details}"
         return RedirectResponse(
-            url=f"/projects/{project_id}?tg_error={quote(str(result.get('error', 'Lỗi')))}",
+            url=f"/projects/{project_id}?tg_error={quote(sanitize_error(err))}",
             status_code=302)
     return RedirectResponse(url=f"/projects/{project_id}?tg_ok=1", status_code=302)
 

@@ -100,6 +100,50 @@ def get_bot_token():
             pass
     return token
 
+
+def sanitize_error(value, token=None):
+    """Return a concise, secret-free representation of *value*.
+
+    Bot tokens (and other configured credentials) are redacted so provider
+    errors can be surfaced to the UI without leaking secrets.  The result is
+    also truncated to keep redirect/query strings and alerts readable.
+    """
+    text = "" if value is None else str(value)
+    if token is None:
+        try:
+            token = get_bot_token()
+        except Exception:
+            token = ""
+    secrets = [token]
+    try:
+        secrets.append(os.getenv("TELEGRAM_BOT_TOKEN", ""))
+    except Exception:
+        pass
+    try:
+        secrets.append(os.getenv("R2_ACCESS_KEY_ID", ""))
+        secrets.append(os.getenv("R2_SECRET_ACCESS_KEY", ""))
+    except Exception:
+        pass
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = " ".join(text.split())
+    if len(text) > 240:
+        text = text[:237] + "..."
+    return text
+
+
+# Backwards/alternative names used by callers and tests.
+sanitize_exception = sanitize_error
+sanitize_token = sanitize_error
+redact_token = sanitize_error
+redact_secrets = sanitize_error
+_redact_secrets = sanitize_error
+_sanitize_error = sanitize_error
+redact = sanitize_error
+sanitize = sanitize_error
+
+
 BOT_TOKEN = get_bot_token()
 
 
@@ -136,14 +180,14 @@ async def send_message(chat_id: str, text: str):
             payload = {}
         if not payload.get("ok", False):
             return {"ok": False,
-                    "error": f"Telegram từ chối: {payload.get('description', 'lỗi không rõ')}"}
+                    "error": sanitize_error(f"Telegram từ chối: {payload.get('description', 'lỗi không rõ')}")}
         return {"ok": True, "error": None}
     except httpx.TimeoutException as exc:
-        return {"ok": False, "error": f"Timeout Telegram: {exc}"}
+        return {"ok": False, "error": sanitize_error(f"Timeout Telegram: {exc}")}
     except httpx.HTTPError as exc:
-        return {"ok": False, "error": f"Lỗi mạng Telegram: {exc}"}
+        return {"ok": False, "error": sanitize_error(f"Lỗi mạng Telegram: {exc}")}
     except Exception as exc:
-        return {"ok": False, "error": f"Lỗi không xác định: {exc}"}
+        return {"ok": False, "error": sanitize_error(f"Lỗi không xác định: {exc}")}
 
 
 def _vn_now():
@@ -345,14 +389,14 @@ async def send_photo(chat_id: str, photo_path: str = "", caption: str = "",
             payload = {}
         if not payload.get("ok", False):
             return {"ok": False,
-                    "error": f"Telegram từ chối: {payload.get('description', 'lỗi không rõ')}"}
+                    "error": sanitize_error(f"Telegram từ chối: {payload.get('description', 'lỗi không rõ')}")}
         return {"ok": True, "error": None}
     except httpx.TimeoutException as exc:
-        return {"ok": False, "error": f"Timeout Telegram: {exc}"}
+        return {"ok": False, "error": sanitize_error(f"Timeout Telegram: {exc}")}
     except httpx.HTTPError as exc:
-        return {"ok": False, "error": f"Lỗi mạng Telegram: {exc}"}
+        return {"ok": False, "error": sanitize_error(f"Lỗi mạng Telegram: {exc}")}
     except Exception as exc:
-        return {"ok": False, "error": f"Lỗi không xác định: {exc}"}
+        return {"ok": False, "error": sanitize_error(f"Lỗi không xác định: {exc}")}
 
 
 async def send_document(chat_id: str, doc_path: str, caption: str = ""):
@@ -479,7 +523,7 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
         else:
             chat_fail += 1
             photo_errors.append(
-                f"chat {chat_id}: {(msg_result or {}).get('error', 'lỗi')}")
+                f"chat {chat_id}: {sanitize_error((msg_result or {}).get('error', 'lỗi'))}")
 
         for p in photos[:10]:
             filename = p.get("filename")
@@ -498,7 +542,7 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
                 photos_failed += 1
                 if read_error is not None:
                     photo_errors.append(
-                        f"chat {chat_id} {filename}: lỗi đọc file: {read_error}")
+                        f"chat {chat_id} {filename}: lỗi đọc file: {sanitize_error(read_error)}")
                 else:
                     photo_errors.append(
                         f"chat {chat_id} {filename}: không đọc được dữ liệu")
@@ -514,7 +558,7 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
             else:
                 photos_failed += 1
                 photo_errors.append(
-                    f"chat {chat_id} {filename}: {result.get('error', 'lỗi')}")
+                    f"chat {chat_id} {filename}: {sanitize_error(result.get('error', 'lỗi'))}")
 
     summary = {
         "ok": True,
@@ -524,12 +568,19 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
         "photos_sent": photos_sent,
         "photos_failed": photos_failed,
     }
+    # Sanitize every collected provider error before it leaves this function.
+    photo_errors = [sanitize_error(e) for e in photo_errors]
+
     if photo_errors:
         summary["photo_errors"] = photo_errors[:20]
+        # Concise, secret-free details built from the first provider errors so
+        # callers/UI can distinguish a bad chat id from a missing R2 object.
+        summary["details"] = " | ".join(photo_errors[:5])
     # Return ok=False on any chat or photo failure with concise error message
     if chat_fail > 0 or photos_failed > 0:
         summary["ok"] = False
-        summary["error"] = f"Đã gửi tới {chat_ok}/{len(chat_ids)} người chat, {photos_sent} ảnh thành công; {chat_fail} chat lỗi, {photos_failed} ảnh lỗi"
+        summary["error"] = sanitize_error(
+            f"Đã gửi tới {chat_ok}/{len(chat_ids)} người chat, {photos_sent} ảnh thành công; {chat_fail} chat lỗi, {photos_failed} ảnh lỗi")
     return summary
 
 
@@ -538,4 +589,4 @@ async def send_diary_report(project_id: int, diary_id: int):
     try:
         return await _send_diary_report_impl(project_id, diary_id)
     except Exception as exc:
-        return {"ok": False, "error": f"Lỗi gửi báo cáo: {exc}"}
+        return {"ok": False, "error": sanitize_error(f"Lỗi gửi báo cáo: {exc}")}

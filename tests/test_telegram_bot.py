@@ -375,3 +375,58 @@ def test_send_diary_report_escapes_html_and_truncates():
     assert "&lt;b&gt;bad&lt;/b&gt;" in text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in text
     assert len(text) <= 4096
+
+
+def test_send_diary_report_failure_summary_includes_details():
+    async def fake_send_message(chat_id, text):
+        return {"ok": False, "error": "chat down"}
+
+    async def fake_send_photo(chat_id, photo_path="", caption="", photo_bytes=None):
+        return {"ok": False, "error": "PHOTO REJECTED"}
+
+    photos = [{"filename": "a.png", "caption": "A"}]
+    chat_rows = [{"telegram_chat_id": "chat-1"}]
+    diary_row = {
+        "id": 1, "date": "2026-01-01", "weather_temp": "25",
+        "weather_desc": "Clear", "total_workers": 10, "notes": "",
+        "issues": "", "issue_level": "none", "issue_status": "",
+    }
+    project_row = {"id": 1, "name": "Test Project"}
+
+    def fake_execute(sql, params=None):
+        s = sql.upper() if isinstance(sql, str) else ""
+        if "DIARY_PHOTOS" in s:
+            return _cursor(rows=photos)
+        if "RECIPIENTS" in s or "USER_PROJECTS" in s or "ROLE='ADMIN'" in s:
+            return _cursor(rows=chat_rows)
+        if "FROM DIARIES" in s:
+            return _cursor(fetchone=diary_row)
+        if "FROM PROJECTS" in s:
+            return _cursor(fetchone=project_row)
+        return _cursor()
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch.object(tb, "send_message", fake_send_message), \
+         patch.object(tb, "send_photo", fake_send_photo), \
+         patch("app.r2.read_file", return_value=b"img"), \
+         patch.object(tb, "connect") as mock_connect:
+        conn = MagicMock()
+        conn.execute.side_effect = fake_execute
+        conn.close = MagicMock()
+        mock_connect.return_value = conn
+
+        result = _run(tb.send_diary_report(1, 1))
+
+    assert result["ok"] is False
+    assert "details" in result
+    assert isinstance(result["details"], str)
+    assert "chat down" in result["details"]
+    assert "PHOTO REJECTED" in result["details"]
+
+
+def test_sanitize_error_redacts_bot_token():
+    token = "123:SECRET"
+    with patch.object(tb, "get_bot_token", return_value=token):
+        redacted = tb.sanitize_error(f"failed for bot{token} endpoint")
+    assert token not in redacted
+    assert "[REDACTED]" in redacted
