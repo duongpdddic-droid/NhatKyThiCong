@@ -1,4 +1,6 @@
 """Telegram reporting module."""
+import asyncio
+import html as _html
 import io
 import os
 import sys
@@ -9,26 +11,35 @@ from app.db import connect
 
 # Telegram Bot API photo limit: 10 MB for sendPhoto (input file).
 TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+# Practical target size for normalized photos (keeps multipart writes fast).
+TELEGRAM_PHOTO_TARGET_BYTES = 2 * 1024 * 1024
+# Maximum edge (px) for normalized photos before upload.
+TELEGRAM_PHOTO_MAX_EDGE = 1600
+# Telegram sendMessage text limit.
+TELEGRAM_MESSAGE_MAX_CHARS = 4096
 
 # Explicit timeouts for the Telegram HTTP client.  A slow R2 read or a
 # congested Telegram endpoint used to hang the whole diary send and turn
 # it into a 500; these values bound connect / read / write / pool and the
 # per-request wall-clock so a single bad photo cannot block the rest.
-HTTP_CONNECT_TIMEOUT = 5.0
-HTTP_READ_TIMEOUT = 15.0
-HTTP_WRITE_TIMEOUT = 30.0
-HTTP_POOL_TIMEOUT = 5.0
-HTTP_REQUEST_TIMEOUT = 60.0
+HTTP_CONNECT_TIMEOUT = 10.0
+HTTP_READ_TIMEOUT = 60.0
+HTTP_WRITE_TIMEOUT = 90.0
+HTTP_POOL_TIMEOUT = 10.0
+HTTP_REQUEST_TIMEOUT = 180.0
 
 
-def _compress_photo(photo_bytes: bytes, max_bytes: int = TELEGRAM_PHOTO_MAX_BYTES) -> bytes:
-    """Resize / recompress an oversized image so it fits Telegram's limit.
+def _compress_photo(photo_bytes: bytes, max_bytes: int = TELEGRAM_PHOTO_TARGET_BYTES) -> bytes:
+    """Normalize a real image to a practical small JPEG before upload.
 
-    Pillow is used only when the input actually exceeds the limit; small
-    photos pass through untouched.  The output is always a valid JPEG so
-    the Telegram ``sendPhoto`` multipart upload never rejects the file.
+    Phone photos below Telegram's 10 MB limit can still be large/slow enough to
+    trigger ``httpx.WriteTimeout`` while writing the multipart body, so every
+    real image is resized to at most ``TELEGRAM_PHOTO_MAX_EDGE`` on its longest
+    side and re-encoded as JPEG targeting ``max_bytes`` (default 2 MB).  Non-image
+    or undecodable inputs are returned untouched so legacy/unknown payloads are
+    not corrupted.
     """
-    if not photo_bytes or len(photo_bytes) <= max_bytes:
+    if not photo_bytes:
         return photo_bytes
     try:
         from PIL import Image
@@ -36,17 +47,38 @@ def _compress_photo(photo_bytes: bytes, max_bytes: int = TELEGRAM_PHOTO_MAX_BYTE
         return photo_bytes
     try:
         img = Image.open(io.BytesIO(photo_bytes))
+        img.load()
     except Exception:
         return photo_bytes
-    img = img.convert("RGB")
-    # Shrink the longest edge until the JPEG is under the limit.
+    try:
+        img = img.convert("RGB")
+    except Exception:
+        return photo_bytes
+
+    # Shrink the longest edge to a practical size for upload.
     max_edge = max(img.size)
-    if max_edge > 1280:
-        ratio = 1280 / max_edge
-        img = img.resize((max(1, int(img.size[0] * ratio)), max(1, int(img.size[1] * ratio))))
-    for quality in (85, 70, 55, 40):
+    if max_edge > TELEGRAM_PHOTO_MAX_EDGE:
+        ratio = TELEGRAM_PHOTO_MAX_EDGE / max_edge
+        img = img.resize(
+            (max(1, int(img.size[0] * ratio)),
+             max(1, int(img.size[1] * ratio))),
+            Image.LANCZOS,
+        )
+
+    # Re-encode, stepping quality down until under the target (or min quality).
+    for quality in (85, 75, 65, 55, 45, 35):
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality)
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= max_bytes:
+            return data
+
+    # Still too big: keep halving dimensions until it fits or we bottom out.
+    while max(img.size) > 320:
+        w, h = img.size
+        img = img.resize((max(1, w // 2), max(1, h // 2)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=35, optimize=True)
         data = buf.getvalue()
         if len(data) <= max_bytes:
             return data
@@ -72,13 +104,46 @@ BOT_TOKEN = get_bot_token()
 
 
 async def send_message(chat_id: str, text: str):
-    BOT_TOKEN = get_bot_token()
-    if not BOT_TOKEN or not chat_id:
-        return
+    """Send a text message. Returns ``{"ok", "error"}`` (never raises).
+
+    Telegram returns HTTP 200 with ``{"ok": false, ...}`` for API-level
+    failures, which httpx does *not* turn into an exception, so the JSON
+    payload is checked explicitly here.
+    """
+    token = get_bot_token()
+    if not token or not chat_id:
+        return {"ok": False, "error": "Thiếu Bot Token hoặc Chat ID"}
     import httpx
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                HTTP_REQUEST_TIMEOUT,
+                connect=HTTP_CONNECT_TIMEOUT,
+                read=HTTP_READ_TIMEOUT,
+                write=HTTP_WRITE_TIMEOUT,
+                pool=HTTP_POOL_TIMEOUT,
+            )
+        ) as client:
+            resp = await client.post(
+                url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+        if resp.status_code >= 400:
+            return {"ok": False,
+                    "error": f"Telegram trả về HTTP {resp.status_code}"}
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = {}
+        if not payload.get("ok", False):
+            return {"ok": False,
+                    "error": f"Telegram từ chối: {payload.get('description', 'lỗi không rõ')}"}
+        return {"ok": True, "error": None}
+    except httpx.TimeoutException as exc:
+        return {"ok": False, "error": f"Timeout Telegram: {exc}"}
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": f"Lỗi mạng Telegram: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Lỗi không xác định: {exc}"}
 
 
 def _vn_now():
@@ -176,8 +241,12 @@ async def send_reminder(project_id: int, force: bool = False) -> dict:
     errors = []
     for chat_id in chat_ids:
         try:
-            await send_message(chat_id, msg)
-            ok += 1
+            res = await send_message(chat_id, msg)
+            if res and res.get("ok"):
+                ok += 1
+            else:
+                fail += 1
+                errors.append(f"{chat_id}: {(res or {}).get('error', 'lỗi')}")
         except Exception as exc:
             fail += 1
             errors.append(f"{chat_id}: {exc}")
@@ -299,7 +368,7 @@ async def send_document(chat_id: str, doc_path: str, caption: str = ""):
                              files={"document": f})
 
 
-async def send_diary_report(project_id: int, diary_id: int):
+async def _send_diary_report_impl(project_id: int, diary_id: int):
     token = get_bot_token()
     if not token:
         print("ERROR: No bot token configured")
@@ -344,32 +413,53 @@ async def send_diary_report(project_id: int, diary_id: int):
         print("ERROR: No recipients with telegram_chat_id")
         return {"ok": False, "error": "Chưa có người nhận với Telegram Chat ID"}
 
-    # Build message
+    # Build message (escape user-controlled values for HTML parse_mode).
+    def _esc(v):
+        return _html.escape(str(v) if v is not None else "", quote=False)
+
+    def _trunc(v, n=500):
+        s = str(v) if v is not None else ""
+        return (s[:n] + "…") if len(s) > n else s
+
+    project_name = _esc(project.get("name", ""))
+    weather_desc = _esc(diary.get("weather_desc", ""))
+    weather_temp = _esc(diary.get("weather_temp", ""))
+    total_workers = _esc(diary.get("total_workers", 0))
+    notes = _esc(_trunc(diary.get("notes", ""), 1000))
+    issues = _esc(_trunc(diary.get("issues", ""), 1000))
+    issue_status = _esc(_trunc(diary.get("issue_status", ""), 500))
+    level = {"none": "", "low": "🟢", "medium": "🟡", "high": "🔴"}.get(
+        diary.get("issue_level", "none"), "")
+    level = _esc(level)
+
     lines = [
-        f"📋 <b>Nhật ký thi công — {project['name']}</b>",
-        f"📅 Ngày: {diary['date']}",
-        f"🌤️ Thời tiết: {diary['weather_temp']}°C — {diary['weather_desc']}",
-        f"👷 Tổng nhân lực: {diary['total_workers']} người",
+        f"📋 <b>Nhật ký thi công — {project_name}</b>",
+        f"📅 Ngày: {_esc(diary.get('date', ''))}",
+        f"🌤️ Thời tiết: {weather_temp}°C — {weather_desc}",
+        f"👷 Tổng nhân lực: {total_workers} người",
         "",
         "<b>Nhân lực:</b>",
     ]
     for l in labor:
-        if l["count"] > 0:
-            lines.append(f"  • {l['name']}: {l['count']} người")
+        if l.get("count", 0) > 0:
+            lines.append(f"  • {_esc(l.get('name', ''))}: {l.get('count')} người")
     lines.append("")
     lines.append("<b>Máy móc:</b>")
     for m in machinery:
-        if m["hours"] > 0:
-            lines.append(f"  • {m['name']}: {m['hours']} máy")
-    if diary.get("notes"):
-        lines.append(f"\n📝 Ghi chú: {diary['notes']}")
-    if diary.get("issues") and diary["issues"].strip():
-        level = {"none": "", "low": "🟢", "medium": "🟡", "high": "🔴"}.get(diary.get("issue_level", "none"), "")
-        lines.append(f"\n⚠️ Vướng mắc {level}: {diary['issues']}")
-        lines.append(f"Kiến nghị: {diary.get('issue_status', '')}")
+        if m.get("hours", 0) > 0:
+            lines.append(f"  • {_esc(m.get('name', ''))}: {m.get('hours')} máy")
+    if notes:
+        lines.append(f"\n📝 Ghi chú: {notes}")
+    if issues and str(diary.get("issues", "")).strip():
+        lines.append(f"\n⚠️ Vướng mắc {level}: {issues}")
+        if issue_status:
+            lines.append(f"Kiến nghị: {issue_status}")
     lines.append(f"\n📸 Ảnh: {len(photos)} ảnh")
 
     msg = "\n".join(lines)
+    # Hard safety: Telegram sendMessage text must not exceed 4096 chars.
+    if len(msg) > TELEGRAM_MESSAGE_MAX_CHARS:
+        msg = msg[:TELEGRAM_MESSAGE_MAX_CHARS - 1] + "…"
     upload_dir = Path(__file__).parent.parent / "uploads"
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from app import r2
@@ -382,22 +472,34 @@ async def send_diary_report(project_id: int, diary_id: int):
 
     for chat_id in chat_ids:
         try:
-            await send_message(chat_id, msg)
-            chat_ok += 1
+            msg_result = await send_message(chat_id, msg)
         except Exception as exc:
+            msg_result = {"ok": False, "error": f"L exception: {exc}"}
+        if msg_result and msg_result.get("ok"):
+            chat_ok += 1
+        else:
             chat_fail += 1
-            photo_errors.append(f"chat {chat_id}: {exc}")
+            photo_errors.append(
+                f"chat {chat_id}: {(msg_result or {}).get('error', 'lỗi')}")
 
         for p in photos[:10]:
-            data = r2.read_file(p["filename"])
-            if data is None:
-                # Legacy local fallback
-                local = upload_dir / p["filename"]
-                if local.exists():
-                    data = local.read_bytes()
+            filename = p.get("filename")
+            try:
+                data = r2.read_file(filename)
+                if data is None:
+                    # Legacy local fallback
+                    local = upload_dir / filename
+                    if local.exists():
+                        data = local.read_bytes()
+            except Exception as exc:
+                data = None
+                photo_errors.append(
+                    f"chat {chat_id} {filename}: lỗi đọc file: {exc}")
             if not data:
+                if f"chat {chat_id} {filename}: lỗi đọc file" not in "".join(photo_errors):
+                    photo_errors.append(
+                        f"chat {chat_id} {filename}: không đọc được dữ liệu")
                 photos_failed += 1
-                photo_errors.append(f"{p['filename']}: không đọc được dữ liệu")
                 continue
             try:
                 result = await send_photo(chat_id, photo_bytes=data,
@@ -410,7 +512,7 @@ async def send_diary_report(project_id: int, diary_id: int):
             else:
                 photos_failed += 1
                 photo_errors.append(
-                    f"{p['filename']}: {result.get('error', 'lỗi')}")
+                    f"chat {chat_id} {filename}: {result.get('error', 'lỗi')}")
 
     summary = {
         "ok": True,
@@ -427,3 +529,11 @@ async def send_diary_report(project_id: int, diary_id: int):
         summary["ok"] = False
         summary["error"] = f"Đã gửi tới {chat_ok}/{len(chat_ids)} người chat, {photos_sent} ảnh thành công; {chat_fail} chat lỗi, {photos_failed} ảnh lỗi"
     return summary
+
+
+async def send_diary_report(project_id: int, diary_id: int):
+    """Public entry point: never raises; returns a summary dict."""
+    try:
+        return await _send_diary_report_impl(project_id, diary_id)
+    except Exception as exc:
+        return {"ok": False, "error": f"Lỗi gửi báo cáo: {exc}"}

@@ -175,3 +175,84 @@ def test_send_diary_report_continues_after_one_photo_timeout():
     assert result["photos_failed"] == 1
     assert "2" in result["error"] and "1" in result["error"]
     assert "photo_errors" in result
+
+
+def test_compress_under_10mb_large_image_normalized():
+    from PIL import Image
+    import random
+
+    random.seed(7)
+    img = Image.effect_noise((2600, 2600), 128)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=82)
+    original = buf.getvalue()
+    # Under Telegram's 10 MB hard limit but still large/slow.
+    assert len(original) < 10 * 1024 * 1024
+
+    compressed = tb._compress_photo(original)
+    assert len(compressed) <= 2 * 1024 * 1024
+    out = Image.open(io.BytesIO(compressed))
+    assert max(out.size) <= 1600
+
+
+def test_send_message_api_failure_returns_failure():
+    from unittest.mock import MagicMock
+
+    async def fake_post(url, json=None):
+        return MagicMock(status_code=200,
+                         json=lambda: {"ok": False, "description": "Bad Request"})
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_message("chat-1", "hi"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert "Bad Request" in result["error"]
+
+
+def test_send_diary_report_reports_chat_failure():
+    async def fake_send_message(chat_id, text):
+        return {"ok": False, "error": "chat down"}
+
+    async def fake_send_photo(chat_id, photo_path="", caption="", photo_bytes=None):
+        return {"ok": True}
+
+    photos = [{"filename": "a.png", "caption": "A"}]
+    chat_rows = [{"telegram_chat_id": "chat-1"}]
+    diary_row = {
+        "id": 1, "date": "2026-01-01", "weather_temp": "25",
+        "weather_desc": "Clear", "total_workers": 10, "notes": "",
+        "issues": "", "issue_level": "none", "issue_status": "",
+    }
+    project_row = {"id": 1, "name": "Test Project"}
+
+    def fake_execute(sql, params=None):
+        s = sql.upper() if isinstance(sql, str) else ""
+        if "DIARY_PHOTOS" in s:
+            return _cursor(rows=photos)
+        if "RECIPIENTS" in s or "USER_PROJECTS" in s or "ROLE='ADMIN'" in s:
+            return _cursor(rows=chat_rows)
+        if "FROM DIARIES" in s:
+            return _cursor(fetchone=diary_row)
+        if "FROM PROJECTS" in s:
+            return _cursor(fetchone=project_row)
+        return _cursor()
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch.object(tb, "send_message", fake_send_message), \
+         patch.object(tb, "send_photo", fake_send_photo), \
+         patch("app.r2.read_file", return_value=b"img"), \
+         patch.object(tb, "connect") as mock_connect:
+        conn = MagicMock()
+        conn.execute.side_effect = fake_execute
+        conn.close = MagicMock()
+        mock_connect.return_value = conn
+
+        result = _run(tb.send_diary_report(1, 1))
+
+    assert result["ok"] is False
+    assert result["chat_ok"] == 0
+    assert result["chat_fail"] == 1

@@ -1038,11 +1038,18 @@ def change_password(request: Request, user=Depends(require_user),
 
 @app.post("/projects/{project_id}/diary/{diary_id}/send-telegram")
 async def send_telegram(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+    from urllib.parse import quote
     from app.telegram_bot import send_diary_report
-    result = await send_diary_report(project_id, diary_id)
+    try:
+        result = await send_diary_report(project_id, diary_id)
+    except Exception as exc:
+        return RedirectResponse(
+            url=f"/projects/{project_id}?tg_error={quote(str(exc))}", status_code=302)
     if result and not result.get("ok"):
-        # Redirect with error message
-        return RedirectResponse(url=f"/projects/{project_id}?tg_error={result.get('error', 'Lỗi')}", status_code=302)
+        # Redirect with readable error message (never 500).
+        return RedirectResponse(
+            url=f"/projects/{project_id}?tg_error={quote(str(result.get('error', 'Lỗi')))}",
+            status_code=302)
     return RedirectResponse(url=f"/projects/{project_id}?tg_ok=1", status_code=302)
 
 
