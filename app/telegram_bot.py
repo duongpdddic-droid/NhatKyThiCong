@@ -232,8 +232,8 @@ async def send_reminder(project_id: int, force: bool = False) -> dict:
 
     msg = (
         f"🔔 <b>Nhắc nhở tạo nhật ký</b>\n"
-        f"📅 Ngày {now.strftime('%d/%m/%Y')}: dự án <b>{project['name']}</b>"
-        f" ({project.get('address', '')}) chưa có nhật ký thi công.\n"
+        f"📅 Ngày {now.strftime('%d/%m/%Y')}: dự án <b>{_html.escape(str(project.get('name','')))}</b>"
+        f" ({_html.escape(str(project.get('address','')))}) chưa có nhật ký thi công.\n"
         f"Vui lòng nhập nhật ký tại: /projects/{project_id}/diary/new"
     )
     ok = 0
@@ -315,10 +315,9 @@ async def send_photo(chat_id: str, photo_path: str = "", caption: str = "",
     if not photo_bytes:
         return {"ok": False, "error": "Không có dữ liệu ảnh"}
 
-    # Resize / recompress oversized images before upload so a single huge
-    # photo cannot blow Telegram's limit (or the request body) and stall
-    # the remaining photos in the same diary.
-    photo_bytes = _compress_photo(photo_bytes)
+    # Normalize the image off the event loop so Pillow's CPU-bound
+    # decode/resize/encode work cannot stall other requests.
+    photo_bytes = await asyncio.to_thread(_compress_photo, photo_bytes)
 
     import httpx
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
@@ -484,6 +483,7 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
 
         for p in photos[:10]:
             filename = p.get("filename")
+            read_error = None
             try:
                 data = r2.read_file(filename)
                 if data is None:
@@ -493,13 +493,15 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
                         data = local.read_bytes()
             except Exception as exc:
                 data = None
-                photo_errors.append(
-                    f"chat {chat_id} {filename}: lỗi đọc file: {exc}")
+                read_error = exc
             if not data:
-                if f"chat {chat_id} {filename}: lỗi đọc file" not in "".join(photo_errors):
+                photos_failed += 1
+                if read_error is not None:
+                    photo_errors.append(
+                        f"chat {chat_id} {filename}: lỗi đọc file: {read_error}")
+                else:
                     photo_errors.append(
                         f"chat {chat_id} {filename}: không đọc được dữ liệu")
-                photos_failed += 1
                 continue
             try:
                 result = await send_photo(chat_id, photo_bytes=data,

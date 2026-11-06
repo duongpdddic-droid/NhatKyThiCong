@@ -256,3 +256,122 @@ def test_send_diary_report_reports_chat_failure():
     assert result["ok"] is False
     assert result["chat_ok"] == 0
     assert result["chat_fail"] == 1
+
+
+def test_send_diary_report_continues_after_read_error():
+    async def fake_send_message(chat_id, text):
+        return {"ok": True}
+
+    async def fake_send_photo(chat_id, photo_path="", caption="", photo_bytes=None):
+        return {"ok": True}
+
+    photos = [
+        {"filename": "a.png", "caption": "A"},
+        {"filename": "b.png", "caption": "B"},
+        {"filename": "c.png", "caption": "C"},
+    ]
+    chat_rows = [{"telegram_chat_id": "chat-1"}]
+    diary_row = {
+        "id": 1, "date": "2026-01-01", "weather_temp": "25",
+        "weather_desc": "Clear", "total_workers": 10, "notes": "",
+        "issues": "", "issue_level": "none", "issue_status": "",
+    }
+    project_row = {"id": 1, "name": "Test Project"}
+
+    def fake_execute(sql, params=None):
+        s = sql.upper() if isinstance(sql, str) else ""
+        if "DIARY_PHOTOS" in s:
+            return _cursor(rows=photos)
+        if "RECIPIENTS" in s or "USER_PROJECTS" in s or "ROLE='ADMIN'" in s:
+            return _cursor(rows=chat_rows)
+        if "FROM DIARIES" in s:
+            return _cursor(fetchone=diary_row)
+        if "FROM PROJECTS" in s:
+            return _cursor(fetchone=project_row)
+        return _cursor()
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch.object(tb, "send_message", fake_send_message), \
+         patch.object(tb, "send_photo", fake_send_photo), \
+         patch("app.r2.read_file", side_effect=[b"img", OSError("boom"), b"img"]), \
+         patch.object(tb, "connect") as mock_connect:
+        conn = MagicMock()
+        conn.execute.side_effect = fake_execute
+        conn.close = MagicMock()
+        mock_connect.return_value = conn
+
+        result = _run(tb.send_diary_report(1, 1))
+
+    assert result["photos_sent"] == 2
+    assert result["photos_failed"] == 1
+    assert any("boom" in e for e in result["photo_errors"])
+    assert result["ok"] is False
+
+
+def test_send_photo_json_ok_false_returns_failure():
+    from unittest.mock import MagicMock
+
+    async def fake_post(url, data=None, files=None):
+        return MagicMock(status_code=200,
+                         json=lambda: {"ok": False, "description": "PHOTO REJECTED"})
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch("httpx.AsyncClient") as MockClient:
+        client = MockClient.return_value.__aenter__.return_value
+        client.post = fake_post
+        result = _run(tb.send_photo("chat-1", photo_bytes=b"x", caption="c"))
+
+    assert result is not None
+    assert result["ok"] is False
+    assert "PHOTO REJECTED" in result["error"]
+
+
+def test_send_diary_report_escapes_html_and_truncates():
+    captured = {}
+
+    async def fake_send_message(chat_id, text):
+        captured["text"] = text
+        return {"ok": True}
+
+    async def fake_send_photo(chat_id, photo_path="", caption="", photo_bytes=None):
+        return {"ok": True}
+
+    long_notes = "X" * 5000
+    photos = []
+    chat_rows = [{"telegram_chat_id": "chat-1"}]
+    diary_row = {
+        "id": 1, "date": "2026-01-01", "weather_temp": "25",
+        "weather_desc": "<b>bad</b>", "total_workers": 10, "notes": long_notes,
+        "issues": "<script>alert(1)</script>", "issue_level": "low",
+        "issue_status": "ok",
+    }
+    project_row = {"id": 1, "name": "<script>P</script>"}
+
+    def fake_execute(sql, params=None):
+        s = sql.upper() if isinstance(sql, str) else ""
+        if "DIARY_PHOTOS" in s:
+            return _cursor(rows=photos)
+        if "RECIPIENTS" in s or "USER_PROJECTS" in s or "ROLE='ADMIN'" in s:
+            return _cursor(rows=chat_rows)
+        if "FROM DIARIES" in s:
+            return _cursor(fetchone=diary_row)
+        if "FROM PROJECTS" in s:
+            return _cursor(fetchone=project_row)
+        return _cursor()
+
+    with patch.object(tb, "get_bot_token", return_value="123:TOKEN"), \
+         patch.object(tb, "send_message", fake_send_message), \
+         patch.object(tb, "send_photo", fake_send_photo), \
+         patch.object(tb, "connect") as mock_connect:
+        conn = MagicMock()
+        conn.execute.side_effect = fake_execute
+        conn.close = MagicMock()
+        mock_connect.return_value = conn
+
+        result = _run(tb.send_diary_report(1, 1))
+
+    text = captured["text"]
+    assert "&lt;script&gt;P&lt;/script&gt;" in text
+    assert "&lt;b&gt;bad&lt;/b&gt;" in text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in text
+    assert len(text) <= 4096
