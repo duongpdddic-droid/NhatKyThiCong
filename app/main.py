@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import re
 import uuid
 from pathlib import Path
 from datetime import date, datetime, timedelta
@@ -401,6 +402,128 @@ def _cleanup_replaced_files(deferred_old):
             r2.delete_file(old_filename)
 
 
+def _is_upload(value):
+    return value is not None and bool(getattr(value, "filename", ""))
+
+
+def _getlist_any(form, names):
+    for name in names:
+        try:
+            items = form.getlist(name)
+        except Exception:
+            items = []
+        if items:
+            return items
+    return []
+
+
+_GALLERY_ALIASES = ("photos_gallery", "photo_gallery", "gallery_photos")
+_CAMERA_ALIASES = ("photos_camera", "photo_camera", "camera_photos")
+_CAPTION_ALIASES = ("photo_captions", "photo_caption", "captions", "photo_descriptions")
+_NEW_PHOTO_ROW_RE = re.compile(r"^photo(?:_file)?_(\d+)$")
+
+
+def _extract_new_photos(form):
+    """Pair newly-uploaded files with their captions robustly.
+
+    Rows in the form render two file pickers (gallery + camera) and one
+    caption.  Empty/unused pickers must not shift caption indices, so we
+    prefer per-picker (or per-row) fields and align by row index.  Legacy
+    ``photos`` submissions are still handled for backward compatibility.
+    Returns a list of ``(upload_file, caption_str)`` for selected files only.
+    """
+    # Row-indexed fields: photo_0 / photo_caption_0 etc.
+    row_indices = set()
+    for key in list(form.keys()):
+        m = _NEW_PHOTO_ROW_RE.match(str(key))
+        if m:
+            row_indices.add(int(m.group(1)))
+    # also caption-indexed
+    for key in list(form.keys()):
+        m = __import__("re").match(r"^photo_caption_(\d+)$", str(key))
+        if m:
+            row_indices.add(int(m.group(1)))
+    if row_indices:
+        out = []
+        for idx in sorted(row_indices):
+            f = None
+            for name in (f"photo_{idx}", f"photo_file_{idx}", f"photo_{idx}_file"):
+                vals = form.getlist(name) if hasattr(form, "getlist") else []
+                if vals:
+                    f = vals[0]
+                    break
+            cap_vals = []
+            for name in (f"photo_caption_{idx}", f"caption_{idx}"):
+                try:
+                    cap_vals = form.getlist(name)
+                except Exception:
+                    cap_vals = []
+                if cap_vals:
+                    break
+            cap = cap_vals[0] if cap_vals else ""
+            if _is_upload(f):
+                out.append((f, cap if cap is not None else ""))
+            # gallery/camera pair for same row index
+            for gname in (f"photo_gallery_{idx}", f"gallery_{idx}"):
+                for gf in (form.getlist(gname) if hasattr(form, "getlist") else []):
+                    if _is_upload(gf):
+                        out.append((gf, cap if cap is not None else ""))
+            for cname in (f"photo_camera_{idx}", f"camera_{idx}"):
+                for cf in (form.getlist(cname) if hasattr(form, "getlist") else []):
+                    if _is_upload(cf):
+                        out.append((cf, cap if cap is not None else ""))
+        if out:
+            return out
+
+    galleries = _getlist_any(form, _GALLERY_ALIASES)
+    cameras = _getlist_any(form, _CAMERA_ALIASES)
+    captions = _getlist_any(form, _CAPTION_ALIASES)
+    if galleries or cameras:
+        n = max(len(galleries), len(cameras), len(captions))
+        out = []
+        for i in range(n):
+            g = galleries[i] if i < len(galleries) else None
+            c = cameras[i] if i < len(cameras) else None
+            cap = captions[i] if i < len(captions) else ""
+            if cap is None:
+                cap = ""
+            for f in (g, c):
+                if _is_upload(f):
+                    out.append((f, cap))
+        return out
+
+    files = form.getlist("photos") if hasattr(form, "getlist") else []
+    captions = _getlist_any(form, _CAPTION_ALIASES)
+    if not captions:
+        return [(f, "") for f in files if _is_upload(f)]
+    # Aligned 1:1
+    if len(files) == len(captions):
+        out = []
+        for i, f in enumerate(files):
+            if _is_upload(f):
+                cap = captions[i] if i < len(captions) else ""
+                out.append((f, cap if cap is not None else ""))
+        return out
+    # Two pickers per row (gallery + camera) -> chunk into pairs.
+    if len(captions) > 0 and len(files) == 2 * len(captions):
+        out = []
+        for r in range(len(captions)):
+            cap = captions[r] if captions[r] is not None else ""
+            for j in (0, 1):
+                idx = 2 * r + j
+                f = files[idx] if idx < len(files) else None
+                if _is_upload(f):
+                    out.append((f, cap))
+        return out
+    # Fallback legacy pairing.
+    out = []
+    for i, f in enumerate(files):
+        if _is_upload(f):
+            cap = captions[i] if i < len(captions) else ""
+            out.append((f, cap if cap is not None else ""))
+    return out
+
+
 @app.post("/projects/{project_id}/diary/save")
 async def diary_save(request: Request, project_id: int, user=Depends(require_user)):
     import traceback
@@ -514,16 +637,12 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         from datetime import datetime as _dt
         stamp = _dt.now().strftime("%d/%m/%Y %H:%M")
-        files = form.getlist("photos")
-        captions = form.getlist("photo_captions")
-        for i, f in enumerate(files):
-            if f and f.filename:
-                fname = await _persist_photo(f, diary_id, stamp)
-                if not fname:
-                    continue
-                caption = captions[i] if i < len(captions) else ""
-                c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
-                          (diary_id, fname, caption))
+        for f, caption in _extract_new_photos(form):
+            fname = await _persist_photo(f, diary_id, stamp)
+            if not fname:
+                continue
+            c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
+                      (diary_id, fname, caption if caption is not None else ""))
 
         # Update/delete/replace existing photos
         existing_ids = form.getlist("existing_photo_ids")
@@ -973,12 +1092,16 @@ def recipient_delete(request: Request, project_id: int, recipient_id: int, user=
 @app.post("/projects/{project_id}/recipients/add")
 def add_recipient(request: Request, project_id: int, user=Depends(require_role("admin")),
                   name: str = Form(...), email: str = Form(""), phone: str = Form(""),
-                  telegram_chat_id: str = Form(""), role: str = Form(""), frequency: str = Form("daily")):
+                  telegram_chat_id: str = Form(""), telegram_type: str = Form("account"),
+                  role: str = Form(""), frequency: str = Form("daily")):
+    # Validate recipient type server-side; default to account.
+    if telegram_type not in ("account", "group"):
+        telegram_type = "account"
     c = connect()
     try:
-        c.execute("""INSERT INTO recipients (project_id, name, email, phone, telegram_chat_id, role, frequency)
-                     VALUES (?,?,?,?,?,?,?)""",
-                  (project_id, name, email, phone, telegram_chat_id, role, frequency))
+        c.execute("""INSERT INTO recipients (project_id, name, email, phone, telegram_chat_id, telegram_type, role, frequency)
+                     VALUES (?,?,?,?,?,?,?,?)""",
+                  (project_id, name, email, phone, telegram_chat_id.strip(), telegram_type, role, frequency))
         c.commit()
     finally:
         c.close()
@@ -1149,16 +1272,12 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         from datetime import datetime as _dt2
         stamp = _dt2.now().strftime("%d/%m/%Y %H:%M")
-        files = form.getlist("photos")
-        captions = form.getlist("photo_captions")
-        for i, f in enumerate(files):
-            if f and f.filename:
-                fname = await _persist_photo(f, diary_id, stamp)
-                if not fname:
-                    continue
-                caption = captions[i] if i < len(captions) else ""
-                c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
-                          (diary_id, fname, caption))
+        for f, caption in _extract_new_photos(form):
+            fname = await _persist_photo(f, diary_id, stamp)
+            if not fname:
+                continue
+            c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
+                      (diary_id, fname, caption if caption is not None else ""))
 
         existing_ids = form.getlist("existing_photo_ids")
         existing_captions = form.getlist("existing_photo_captions")

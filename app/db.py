@@ -82,6 +82,18 @@ def _migrate_library_columns(c):
         c.execute("UPDATE machinery_types SET is_active=1 WHERE is_active IS NULL")
 
 
+def _migrate_recipient_columns(c):
+    """Additive migration: telegram_type for recipients (account/group)."""
+    if not IS_PG:
+        cols = _table_columns(c, "recipients")
+        if "telegram_type" not in cols:
+            c.execute("ALTER TABLE recipients ADD COLUMN telegram_type TEXT DEFAULT 'account'")
+        c.execute("UPDATE recipients SET telegram_type='account' WHERE telegram_type IS NULL OR telegram_type=''")
+    else:
+        c.execute("ALTER TABLE recipients ADD COLUMN IF NOT EXISTS telegram_type TEXT DEFAULT 'account'")
+        c.execute("UPDATE recipients SET telegram_type='account' WHERE telegram_type IS NULL OR telegram_type=''")
+
+
 def connect():
     if IS_PG:
         import psycopg2
@@ -257,6 +269,7 @@ def init_db():
             email TEXT,
             phone TEXT,
             telegram_chat_id TEXT,
+            telegram_type TEXT DEFAULT 'account',
             role TEXT,
             frequency TEXT DEFAULT 'daily',
             created_at TIMESTAMP DEFAULT NOW()
@@ -315,6 +328,7 @@ def init_db():
         # Migrate legacy 'giờ' unit to 'máy' for existing library entries.
         c.execute("UPDATE machinery_types SET unit='máy' WHERE unit='giờ'")
         _migrate_library_columns(c)
+        _migrate_recipient_columns(c)
         # Additive migrations for existing databases (backward compatible).
         _migrate_reminder_columns(c)
         import hashlib
