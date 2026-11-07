@@ -8,7 +8,7 @@
   <hr>
   <table style="width:100%;border-collapse:collapse;margin:12px 0;">
     <tr><td style="padding:4px;font-weight:600;width:25%;">Ngày</td><td style="padding:4px;">{{ diary.date }}</td>
-        <td style="padding:4px;font-weight:600;width:25%;">Thời tiết</td><td style="padding:4px;">{{ diary.weather_temp }}°C — {{ diary.weather_desc }}</td></tr>
+        <td style="padding:4px;font-weight:600;width:25%;">Thời tiết</td><td style="padding:4px;">Sáng: {{ weather.morning.temp if weather.morning else diary.weather_temp }}°C — {{ weather.morning.desc if weather.morning else diary.weather_desc }}<br>Chiều: {{ weather.afternoon.temp if weather.afternoon else '' }}°C — {{ weather.afternoon.desc if weather.afternoon else '' }}</td></tr>
     <tr><td style="padding:4px;font-weight:600;">Chỉ huy</td><td style="padding:4px;">{{ diary.foreman }}</td>
         <td style="padding:4px;font-weight:600;">Tổng NL</td><td style="padding:4px;">{{ diary.total_workers }} người</td></tr>
   </table>

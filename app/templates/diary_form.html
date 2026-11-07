@@ -16,12 +16,22 @@
     </div>
     <div class="form-row">
       <div class="form-group">
-        <label>Nhiệt độ (°C)</label>
-        <input type="number" step="0.1" name="weather_temp" id="weather_temp" value="{{ diary.weather_temp if diary else '' }}">
+        <label>Buổi sáng — nhiệt độ (°C)</label>
+        <input type="number" step="0.1" name="weather_morning_temp" id="weather_morning_temp" value="{{ weather_morning.temp if weather_morning else (diary.weather_temp if diary else '') }}">
       </div>
       <div class="form-group">
-        <label>Thời tiết</label>
-        <input type="text" name="weather_desc" id="weather_desc" value="{{ diary.weather_desc if diary else '' }}">
+        <label>Buổi sáng — thời tiết</label>
+        <input type="text" name="weather_morning_desc" id="weather_morning_desc" value="{{ weather_morning.desc if weather_morning else (diary.weather_desc if diary else '') }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Buổi chiều — nhiệt độ (°C)</label>
+        <input type="number" step="0.1" name="weather_afternoon_temp" id="weather_afternoon_temp" value="{{ weather_afternoon.temp if weather_afternoon else '' }}">
+      </div>
+      <div class="form-group">
+        <label>Buổi chiều — thời tiết</label>
+        <input type="text" name="weather_afternoon_desc" id="weather_afternoon_desc" value="{{ weather_afternoon.desc if weather_afternoon else '' }}">
       </div>
     </div>
     <button type="button" class="btn sm" onclick="loadWeather()">🌤️ Lấy thời tiết</button>
@@ -344,13 +354,13 @@ function loadWeather() {
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const r = await fetch(`/api/weather?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}&date=${diaryDate}`);
       const d = await r.json();
-      if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
-      document.getElementById('weather_desc').value = d.desc;
+       if (d.temp) document.getElementById('weather_morning_temp').value = d.temp.toFixed(1);
+       document.getElementById('weather_morning_desc').value = d.desc;
     });
   } else {
     fetch(`/api/weather?date=${diaryDate}`).then(r=>r.json()).then(d => {
-      if (d.temp) document.getElementById('weather_temp').value = d.temp.toFixed(1);
-      document.getElementById('weather_desc').value = d.desc;
+       if (d.temp) document.getElementById('weather_morning_temp').value = d.temp.toFixed(1);
+       document.getElementById('weather_morning_desc').value = d.desc;
     });
   }
 }

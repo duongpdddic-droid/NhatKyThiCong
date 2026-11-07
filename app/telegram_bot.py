@@ -445,6 +445,9 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
     try:
         diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
         project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+        weather = {r["session"]: dict(r) for r in c.execute(
+            "SELECT session, temp, description FROM project_weather_log WHERE project_id=? AND log_date=?",
+            (project_id, diary["date"]))}
         labor = [dict(r) for r in c.execute(
             """SELECT lt.name, dl.count FROM diary_labor dl
                JOIN labor_types lt ON dl.labor_type_id=lt.id WHERE dl.diary_id=?""", (diary_id,))]
@@ -504,8 +507,13 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
         return (s[:n] + "…") if len(s) > n else s
 
     project_name = _esc(project.get("name", ""))
-    weather_desc = _esc(diary.get("weather_desc", ""))
-    weather_temp = _esc(diary.get("weather_temp", ""))
+    morning = weather.get("morning", {})
+    afternoon = weather.get("afternoon", {})
+    weather_desc = _esc(morning.get("description", diary.get("weather_desc", "")))
+    weather_temp = _esc(morning.get("temp", diary.get("weather_temp", "")))
+    afternoon_text = ""
+    if afternoon:
+        afternoon_text = f" | Chiều: {_esc(afternoon.get('temp', ''))}°C — {_esc(afternoon.get('description', ''))}"
     total_workers = _esc(diary.get("total_workers", 0))
     notes = _esc(_trunc(diary.get("notes", ""), 1000))
     legacy_issues = _esc(_trunc(diary.get("issues", ""), 1000))
@@ -521,7 +529,7 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
     lines = [
         f"📋 <b>Nhật ký thi công — {project_name}</b>",
         f"📅 Ngày: {_esc(diary.get('date', ''))}",
-        f"🌤️ Thời tiết: {weather_temp}°C — {weather_desc}",
+        f"🌤️ Thời tiết: Sáng {weather_temp}°C — {weather_desc}{afternoon_text}",
         f"👷 Tổng nhân lực: {total_workers} người",
         "",
         "<b>Nhân lực:</b>",

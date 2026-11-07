@@ -12,6 +12,16 @@ EXPORT_DIR = Path(__file__).parent.parent / "exports"
 EXPORT_DIR.mkdir(exist_ok=True)
 
 
+def _weather_text(diary, weather):
+    """Render both sessions while retaining the legacy morning fallback."""
+    morning = weather.get("morning", {})
+    afternoon = weather.get("afternoon", {})
+    mtemp = morning.get("temp", diary.get("weather_temp", ""))
+    mdesc = morning.get("description", diary.get("weather_desc", ""))
+    a = f"; Chiều: {afternoon.get('temp', '')}°C — {afternoon.get('description', '')}" if afternoon else ""
+    return f"Sáng: {mtemp}°C — {mdesc}{a}"
+
+
 def generate_diary_pdf(project_id: int, diary_id: int) -> str:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase import pdfmetrics
@@ -64,8 +74,11 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
                     "SELECT filename, caption, photo_kind, issue_id FROM diary_photos WHERE diary_id=?",
                     (diary_id,))]
         issues = [dict(r) for r in c.execute(
-                    "SELECT * FROM diary_issues WHERE diary_id=? ORDER BY id",
+            "SELECT * FROM diary_issues WHERE diary_id=? ORDER BY id",
                     (diary_id,))]
+        weather = {r["session"]: dict(r) for r in c.execute(
+            "SELECT session, temp, description FROM project_weather_log WHERE project_id=? AND log_date=?",
+            (project_id, diary["date"]))}
     finally:
         c.close()
 
@@ -113,7 +126,7 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
 
     # Info table
     info_data = [
-        ["Ngày", diary["date"], "Thời tiết", f"{diary.get('weather_temp', '')}°C — {diary.get('weather_desc', '')}"],
+        ["Ngày", diary["date"], "Thời tiết", _weather_text(diary, weather)],
         ["Chỉ huy trưởng", diary.get("foreman", ""), "Tổng nhân lực", str(diary.get("total_workers", 0))],
     ]
     t = Table(info_data, colWidths=[3*cm, 5*cm, 3*cm, 5*cm])

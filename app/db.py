@@ -66,6 +66,45 @@ def _migrate_reminder_columns(c):
         c.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS reminder_time TEXT DEFAULT '08:00'")
 
 
+def _migrate_weather(c):
+    """Add project coordinates and one cached weather row per session/day."""
+    if not IS_PG:
+        cols = _table_columns(c, "projects")
+        if "lat" not in cols:
+            c.execute("ALTER TABLE projects ADD COLUMN lat REAL DEFAULT 21.0")
+        if "lon" not in cols:
+            c.execute("ALTER TABLE projects ADD COLUMN lon REAL DEFAULT 105.8")
+        c.execute("UPDATE projects SET lat=21.0 WHERE lat IS NULL")
+        c.execute("UPDATE projects SET lon=105.8 WHERE lon IS NULL")
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS project_weather_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                log_date TEXT NOT NULL,
+                session TEXT NOT NULL,
+                temp REAL,
+                description TEXT,
+                icon TEXT,
+                fetched_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(project_id, log_date, session)
+            );
+        """)
+    else:
+        c.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS lat REAL DEFAULT 21.0")
+        c.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS lon REAL DEFAULT 105.8")
+        c.execute("UPDATE projects SET lat=21.0 WHERE lat IS NULL")
+        c.execute("UPDATE projects SET lon=105.8 WHERE lon IS NULL")
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS project_weather_log (
+                id SERIAL PRIMARY KEY,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                log_date TEXT NOT NULL, session TEXT NOT NULL, temp REAL,
+                description TEXT, icon TEXT, fetched_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(project_id, log_date, session)
+            );
+        """)
+
+
 def _migrate_library_columns(c):
     """Additive migration: soft-disable flag for labor/machinery library."""
     if not IS_PG:
@@ -341,6 +380,8 @@ def init_db():
             end_date TEXT,
             reminder_enabled INTEGER DEFAULT 1,
             reminder_time TEXT DEFAULT '08:00',
+            lat REAL DEFAULT 21.0,
+            lon REAL DEFAULT 105.8,
             created_at TIMESTAMP DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS user_projects (
@@ -506,6 +547,7 @@ def init_db():
         # Additive migrations for existing databases (backward compatible).
         _migrate_photo_size_column(c)
         _migrate_reminder_columns(c)
+        _migrate_weather(c)
         _migrate_issue_columns(c)
         _migrate_photo_kind_column(c)
         _migrate_diary_issues_table(c)

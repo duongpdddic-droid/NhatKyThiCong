@@ -27,6 +27,7 @@ from app.auth import (
     project_write_dep, diary_write_dep,
 )
 from app import r2
+from app.weather import ensure_weather, store_weather
 
 app = FastAPI(title="Nhật ký thi công")
 
@@ -229,12 +230,13 @@ def project_new_page(request: Request, user=Depends(require_role("admin"))):
 def project_create(request: Request, user=Depends(require_role("admin")),
                    name: str = Form(...), address: str = Form(""), investor: str = Form(""),
                    contractor: str = Form(""), supervisor: str = Form(""),
-                   start_date: str = Form(""), end_date: str = Form("")):
+                   start_date: str = Form(""), end_date: str = Form(""),
+                   lat: float = Form(21.0), lon: float = Form(105.8)):
     c = connect()
     try:
-        c.execute("""INSERT INTO projects (name, address, investor, contractor, supervisor, start_date, end_date)
-                     VALUES (?,?,?,?,?,?,?)""",
-                  (name, address, investor, contractor, supervisor, start_date, end_date))
+        c.execute("""INSERT INTO projects (name, address, investor, contractor, supervisor, start_date, end_date, lat, lon)
+                     VALUES (?,?,?,?,?,?,?,?,?)""",
+                  (name, address, investor, contractor, supervisor, start_date, end_date, lat, lon))
         c.commit()
     finally:
         c.close()
@@ -255,12 +257,13 @@ def project_edit_page(request: Request, project_id: int, user=Depends(require_ro
 def project_update(request: Request, project_id: int, user=Depends(require_role("admin")),
                    name: str = Form(...), address: str = Form(""), investor: str = Form(""),
                    contractor: str = Form(""), supervisor: str = Form(""),
-                   start_date: str = Form(""), end_date: str = Form("")):
+                   start_date: str = Form(""), end_date: str = Form(""),
+                   lat: float = Form(21.0), lon: float = Form(105.8)):
     c = connect()
     try:
         c.execute("""UPDATE projects SET name=?, address=?, investor=?, contractor=?,
-                     supervisor=?, start_date=?, end_date=? WHERE id=?""",
-                  (name, address, investor, contractor, supervisor, start_date, end_date, project_id))
+                     supervisor=?, start_date=?, end_date=?, lat=?, lon=? WHERE id=?""",
+                  (name, address, investor, contractor, supervisor, start_date, end_date, lat, lon, project_id))
         c.commit()
     finally:
         c.close()
@@ -289,7 +292,7 @@ def project_detail(request: Request, project_id: int, user: Annotated[dict, Depe
 # ── Diary form ───────────────────────────────────────────────────────────────
 
 @app.get("/projects/{project_id}/diary/new", response_class=HTMLResponse)
-def diary_new(request: Request, project_id: int, user: Annotated[dict, Depends(project_write_dep)], date_str: str = None):
+async def diary_new(request: Request, project_id: int, user: Annotated[dict, Depends(project_write_dep)], date_str: str = None):
     c = connect()
     try:
         project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
@@ -297,6 +300,11 @@ def diary_new(request: Request, project_id: int, user: Annotated[dict, Depends(p
         machinery_types = [dict(r) for r in c.execute("SELECT * FROM machinery_types WHERE COALESCE(is_active,1)=1 ORDER BY sort_order")]
         # Auto-fill from previous day
         target_date = date_str or date.today().isoformat()
+        session = "morning" if datetime.now().hour < 12 else "afternoon"
+        await ensure_weather(c, project_id, target_date, project.get("lat", 21.0), project.get("lon", 105.8), session)
+        weather_rows = {r["session"]: dict(r) for r in c.execute(
+            "SELECT session, temp, description AS desc, icon FROM project_weather_log "
+            "WHERE project_id=? AND log_date=?", (project_id, target_date))}
         prev = c.execute(
             "SELECT * FROM diaries WHERE project_id=? AND date < ? ORDER BY date DESC LIMIT 1",
             (project_id, target_date)).fetchone()
@@ -322,6 +330,8 @@ def diary_new(request: Request, project_id: int, user: Annotated[dict, Depends(p
         "prev_labor": prev_labor, "prev_machinery": prev_machinery,
         "prev_materials": prev_materials, "prev_photos": prev_photos,
         "diary": None,
+        "weather_morning": weather_rows.get("morning", {}),
+        "weather_afternoon": weather_rows.get("afternoon", {}),
     })
 
 
@@ -959,6 +969,16 @@ def _getlist_any(form, names):
     return []
 
 
+def _weather_form_value(form, prefix, fallback=None):
+    raw = form.get(prefix)
+    if raw in (None, ""):
+        return fallback
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 _GALLERY_ALIASES = ("photos_gallery", "photo_gallery", "gallery_photos")
 _CAMERA_ALIASES = ("photos_camera", "photo_camera", "camera_photos")
 _CAPTION_ALIASES = ("photo_captions", "photo_caption", "captions", "photo_descriptions")
@@ -1084,6 +1104,10 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
         except (ValueError, TypeError):
             weather_temp = None
     weather_desc = form.get("weather_desc")
+    morning_temp = _weather_form_value(form, "weather_morning_temp", weather_temp)
+    morning_desc = form.get("weather_morning_desc") or weather_desc
+    afternoon_temp = _weather_form_value(form, "weather_afternoon_temp")
+    afternoon_desc = form.get("weather_afternoon_desc") or ""
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
     issues = form.get("issues", "")
@@ -1108,6 +1132,8 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
 
     c = connect()
     try:
+        store_weather(c, project_id, diary_date, "morning", {"temp": morning_temp, "desc": morning_desc})
+        store_weather(c, project_id, diary_date, "afternoon", {"temp": afternoon_temp, "desc": afternoon_desc})
         # Upsert diary
         existing = c.execute(
             "SELECT id FROM diaries WHERE project_id=? AND date=?", (project_id, diary_date)).fetchone()
@@ -1117,7 +1143,7 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
                          total_workers=?, notes=?, issues=?, issue_level=?, issue_status=?,
                          cause=?, related_party=?, workflow_status=?, resolved_at=?,
                          updated_at=datetime('now') WHERE id=?""",
-                      (weather_temp, weather_desc, foreman, total_workers, notes, issues,
+                      (morning_temp, morning_desc, foreman, total_workers, notes, issues,
                        issue_level, issue_status, cause, related_party, workflow_status,
                        resolved_at, diary_id))
             # Clear old children
@@ -1131,7 +1157,7 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
                              foreman, total_workers, notes, issues, issue_level, issue_status,
                              cause, related_party, workflow_status, resolved_at, created_by)
                              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (project_id, diary_date, weather_temp, weather_desc, foreman,
+                             (project_id, diary_date, morning_temp, morning_desc, foreman,
                              total_workers, notes, issues, issue_level, issue_status, cause,
                              related_party, workflow_status, resolved_at, user["id"]))
             if __import__("app.db", fromlist=["IS_PG"]).IS_PG:
@@ -1632,7 +1658,7 @@ async def admin_user_projects_save(request: Request, user_id: int, user=Depends(
 # ── CRUD: Edit Diary ──────────────────────────────────────────────────────────
 
 @app.get("/projects/{project_id}/diary/{diary_id}/edit", response_class=HTMLResponse)
-def diary_edit(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_write_dep)]):
+async def diary_edit(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_write_dep)]):
     c = connect()
     try:
         # Fetch raw rows and validate BEFORE dict(): a missing project or
@@ -1647,6 +1673,11 @@ def diary_edit(request: Request, project_id: int, diary_id: int, user: Annotated
             raise HTTPException(status_code=404)
         project = dict(project_row)
         diary = dict(diary_row)
+        session = "morning" if datetime.now().hour < 12 else "afternoon"
+        await ensure_weather(c, project_id, diary["date"], project.get("lat", 21.0), project.get("lon", 105.8), session)
+        weather_rows = {r["session"]: dict(r) for r in c.execute(
+            "SELECT session, temp, description AS desc, icon FROM project_weather_log "
+            "WHERE project_id=? AND log_date=?", (project_id, diary["date"]))}
         _all_labor = [dict(r) for r in c.execute("SELECT * FROM labor_types ORDER BY sort_order")]
         _all_mach = [dict(r) for r in c.execute("SELECT * FROM machinery_types ORDER BY sort_order")]
         _el = {r["labor_type_id"] for r in c.execute("SELECT labor_type_id FROM diary_labor WHERE diary_id=?", (diary_id,))}
@@ -1678,6 +1709,8 @@ def diary_edit(request: Request, project_id: int, diary_id: int, user: Annotated
         "prev_materials": materials, "prev_photos": photos,
         "diary": diary, "diary_id": diary_id, "existing_tasks": tasks,
         "existing_issues": existing_issues,
+        "weather_morning": weather_rows.get("morning", {"temp": diary.get("weather_temp"), "desc": diary.get("weather_desc", "")}),
+        "weather_afternoon": weather_rows.get("afternoon", {}),
     })
 
 
@@ -1904,6 +1937,10 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         except (ValueError, TypeError):
             weather_temp = None
     weather_desc = form.get("weather_desc")
+    morning_temp = _weather_form_value(form, "weather_morning_temp", weather_temp)
+    morning_desc = form.get("weather_morning_desc") or weather_desc
+    afternoon_temp = _weather_form_value(form, "weather_afternoon_temp")
+    afternoon_desc = form.get("weather_afternoon_desc") or ""
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
     issues = form.get("issues", "")
@@ -1928,11 +1965,13 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
 
     c = connect()
     try:
+        store_weather(c, project_id, diary_date, "morning", {"temp": morning_temp, "desc": morning_desc})
+        store_weather(c, project_id, diary_date, "afternoon", {"temp": afternoon_temp, "desc": afternoon_desc})
         c.execute("""UPDATE diaries SET date=?, weather_temp=?, weather_desc=?, foreman=?,
                      total_workers=?, notes=?, issues=?, issue_level=?, issue_status=?,
                      cause=?, related_party=?, workflow_status=?, resolved_at=?,
                      updated_at=datetime('now') WHERE id=?""",
-                  (diary_date, weather_temp, weather_desc, foreman, total_workers, notes,
+                   (diary_date, morning_temp, morning_desc, foreman, total_workers, notes,
                    issues, issue_level, issue_status, cause, related_party, workflow_status,
                    resolved_at, diary_id))
         for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
@@ -2065,12 +2104,16 @@ def diary_preview(request: Request, project_id: int, diary_id: int, user: Annota
         if not issues:
             pseudo = _legacy_issue_dict(diary)
             issues = [pseudo] if pseudo else []
+        weather = {r["session"]: dict(r) for r in c.execute(
+            "SELECT session, temp, description AS desc FROM project_weather_log "
+            "WHERE project_id=? AND log_date=?", (project_id, diary["date"]))}
     finally:
         c.close()
     return templates.TemplateResponse(request, "diary_preview.html", {
         "user": user, "project": project, "diary": diary,
         "labor": labor, "machinery": machinery, "materials": materials,
         "tasks": tasks, "photos": photos, "issues": issues,
+        "weather": weather,
     })
 
 

@@ -16,6 +16,10 @@
     <div class="form-group"><label>Ngày bắt đầu</label><input type="date" name="start_date" value="{{ project.start_date if project else '' }}"></div>
     <div class="form-group"><label>Ngày kết thúc</label><input type="date" name="end_date" value="{{ project.end_date if project else '' }}"></div>
   </div>
+  <div class="form-row">
+    <div class="form-group"><label>Vĩ độ</label><input type="number" step="any" name="lat" value="{{ project.lat if project and project.lat is not none else 21.0 }}" required></div>
+    <div class="form-group"><label>Kinh độ</label><input type="number" step="any" name="lon" value="{{ project.lon if project and project.lon is not none else 105.8 }}" required></div>
+  </div>
   <button type="submit" class="btn primary full">{% if project %}Cập nhật{% else %}Tạo dự án{% endif %}</button>
 </form>
 <a href="{% if project %}/projects/{{ project.id }}{% else %}/{% endif %}" class="btn sm" style="margin-top:12px;">← Quay lại</a>
