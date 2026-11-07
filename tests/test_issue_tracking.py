@@ -355,7 +355,8 @@ def test_escalation_alerts_once(client):
         return {"ok": True, "error": None}
 
     with patch.object(tbmod, "send_message", fake_send_message), \
-         patch.object(tbmod, "get_bot_token", return_value="123:TOK"):
+         patch.object(tbmod, "get_bot_token", return_value="123:TOK"), \
+         patch.object(mainmod, "_reminder_loop_run", lambda *_args, **_kwargs: None):
         client.post("/projects/1/diary/save", data={
             "date": "2026-05-04", "weather_temp": "29", "weather_desc": "N",
             "foreman": "CHT", "total_workers": "0", "notes": "",
@@ -371,7 +372,8 @@ def test_escalation_alerts_once(client):
             "issues": "low start", "issue_level": "high", "issue_status": "",
             "cause": "", "related_party": "", "workflow_status": "pending",
         }, follow_redirects=False)
-    assert len(sent) == 1
+    issue_alerts = [text for text in sent if "⚠️ <b>Có issue mới" in text]
+    assert len(issue_alerts) == 1
 
 
 def test_no_alert_when_no_recipients(client):

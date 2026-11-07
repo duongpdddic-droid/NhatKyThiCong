@@ -27,17 +27,17 @@
       <td style="padding:8px 10px;font-size:13px;">{{ d.date }}</td>
       <td style="padding:8px 10px;font-size:13px;">{{ d.project_name }}</td>
       <td style="padding:8px 10px;font-size:13px;">
-        {% if d.issue_level == 'high' %}<span style="color:#dc2626;">🔴 Nghiêm trọng</span>
-        {% elif d.issue_level == 'medium' %}<span style="color:#ca8a04;">🟡 Trung bình</span>
-        {% elif d.issue_level == 'low' %}<span style="color:#16a34a;">🟢 Nhẹ</span>
-        {% else %}{{ d.issue_level }}{% endif %}
+        {% if d.level == 'high' %}<span style="color:#dc2626;">🔴 Nghiêm trọng</span>
+        {% elif d.level == 'medium' %}<span style="color:#ca8a04;">🟡 Trung bình</span>
+        {% elif d.level == 'low' %}<span style="color:#16a34a;">🟢 Nhẹ</span>
+        {% else %}{{ d.level }}{% endif %}
       </td>
-      <td style="padding:8px 10px;font-size:13px;max-width:220px;word-break:break-word;">{{ d.issues[:100] }}{% if d.issues|length > 100 %}…{% endif %}</td>
+      <td style="padding:8px 10px;font-size:13px;max-width:220px;word-break:break-word;">{{ d.description[:100] }}{% if d.description|length > 100 %}…{% endif %}</td>
       <td style="padding:8px 10px;font-size:13px;">{{ d.workflow_status }}</td>
       <td style="padding:8px 10px;font-size:13px;">{{ d.related_party or '' }}</td>
       <td style="padding:8px 10px;font-size:13px;white-space:nowrap;">
-        <a href="/projects/{{ d.project_id }}/diary/{{ d.id }}/edit" class="btn sm">✏️ Sửa</a>
-        <a href="/projects/{{ d.project_id }}/diary/{{ d.id }}/preview" class="btn sm">👁️</a>
+        <a href="/projects/{{ d.project_id }}/diary/{{ d.diary_id }}/edit" class="btn sm">✏️ Sửa</a>
+        <a href="/projects/{{ d.project_id }}/diary/{{ d.diary_id }}/preview" class="btn sm">👁️</a>
       </td>
     </tr>
   {% endfor %}

@@ -155,17 +155,34 @@ def dashboard(request: Request, user=Depends(require_user)):
                    WHERE up.user_id=? ORDER BY p.id DESC""", (user["id"],))]
         # Stats
         n_diaries = c.execute("SELECT COUNT(*) AS cnt FROM diaries").fetchone()["cnt"]
-        # Unresolved issue count (workflow_status pending/unresolved with a real issue).
+        # Unresolved issue count: child table first, legacy fallback second.
         if user["role"] == "admin":
             n_issues = c.execute(
-                "SELECT COUNT(*) AS cnt FROM diaries WHERE issues IS NOT NULL "
-                "AND issues != '' AND workflow_status IN ('pending','unresolved')").fetchone()["cnt"]
-        else:
-            n_issues = c.execute(
+                """SELECT COUNT(*) AS cnt FROM diary_issues
+                   WHERE workflow_status IN ('pending','unresolved')
+                     AND description IS NOT NULL AND description != ''""").fetchone()["cnt"]
+            n_issues += c.execute(
                 """SELECT COUNT(*) AS cnt FROM diaries d
                    WHERE d.issues IS NOT NULL AND d.issues != ''
-                   AND d.workflow_status IN ('pending','unresolved')
-                   AND d.project_id IN (SELECT p.id FROM projects p
+                     AND d.workflow_status IN ('pending','unresolved')
+                     AND NOT EXISTS (SELECT 1 FROM diary_issues di
+                                     WHERE di.diary_id=d.id)""").fetchone()["cnt"]
+        else:
+            n_issues = c.execute(
+                """SELECT COUNT(*) AS cnt FROM diary_issues di
+                   JOIN diaries d ON d.id=di.diary_id
+                   WHERE di.workflow_status IN ('pending','unresolved')
+                     AND di.description IS NOT NULL AND di.description != ''
+                     AND d.project_id IN (SELECT p.id FROM projects p
+                       JOIN user_projects up ON p.id=up.project_id WHERE up.user_id=?)""",
+                (user["id"],)).fetchone()["cnt"]
+            n_issues += c.execute(
+                """SELECT COUNT(*) AS cnt FROM diaries d
+                   WHERE d.issues IS NOT NULL AND d.issues != ''
+                     AND d.workflow_status IN ('pending','unresolved')
+                     AND NOT EXISTS (SELECT 1 FROM diary_issues di
+                                     WHERE di.diary_id=d.id)
+                     AND d.project_id IN (SELECT p.id FROM projects p
                        JOIN user_projects up ON p.id=up.project_id WHERE up.user_id=?)""",
                 (user["id"],)).fetchone()["cnt"]
         today = date.today().isoformat()
@@ -191,27 +208,12 @@ def dashboard(request: Request, user=Depends(require_user)):
 def issues_list(request: Request, user=Depends(require_role("admin"))):
     c = connect()
     try:
-        if user["role"] == "admin":
-            rows = c.execute(
-                """SELECT d.*, p.name AS project_name FROM diaries d
-                   JOIN projects p ON p.id=d.project_id
-                   WHERE d.issues IS NOT NULL AND d.issues != ''
-                     AND d.workflow_status IN ('pending','unresolved')
-                   ORDER BY d.date DESC""").fetchall()
-        else:
-            rows = c.execute(
-                """SELECT d.*, p.name AS project_name FROM diaries d
-                   JOIN projects p ON p.id=d.project_id
-                   JOIN user_projects up ON p.id=up.project_id
-                   WHERE d.issues IS NOT NULL AND d.issues != ''
-                     AND d.workflow_status IN ('pending','unresolved')
-                     AND up.user_id=?
-                   ORDER BY d.date DESC""", (user["id"],)).fetchall()
-        unresolved_count = len(rows)
+        rows = _unresolved_issue_rows(c, user)
     finally:
         c.close()
+    unresolved_count = len(rows)
     return templates.TemplateResponse(request, "issues_list.html", {
-        "user": user, "issues": [dict(r) for r in rows],
+        "user": user, "issues": rows,
         "unresolved_count": unresolved_count,
     })
 
@@ -353,6 +355,331 @@ def _norm_issue_level(v):
 def _norm_workflow(v):
     v = (v or "").strip().lower()
     return v if v in _WORKFLOW_STATUSES else "none"
+
+
+def _norm_issue_row(row):
+    """Normalise a raw diary_issues row into a plain dict with safe defaults."""
+    if row is None:
+        return None
+    d = dict(row)
+    d.setdefault("description", "")
+    d.setdefault("cause", "")
+    d.setdefault("related_party", "")
+    d.setdefault("suggestion", "")
+    d.setdefault("level", "none")
+    d.setdefault("workflow_status", "pending")
+    d.setdefault("resolved_at", None)
+    d.setdefault("notified_at", None)
+    return d
+
+
+def _load_diary_issues(c, diary_id):
+    """All child issues for a diary, ordered by id (oldest first)."""
+    rows = c.execute(
+        "SELECT * FROM diary_issues WHERE diary_id=? ORDER BY id",
+        (diary_id,)).fetchall()
+    return [_norm_issue_row(r) for r in rows]
+
+
+def _unresolved_issue_rows(c, user):
+    """All unresolved issues across the user's accessible projects.
+
+    Reads the child table first; diaries that still only carry legacy
+    single-issue columns synthesise one pseudo-issue via ``_legacy_issue_dict``.
+    """
+    if user["role"] == "admin":
+        proj_filter = ""
+        proj_params = []
+    else:
+        proj_filter = ("AND d.project_id IN (SELECT p.id FROM projects p "
+                       "JOIN user_projects up ON p.id=up.project_id WHERE up.user_id=?)")
+        proj_params = [user["id"]]
+    rows = c.execute(
+        """SELECT di.*, d.date, d.project_id, p.name AS project_name
+           FROM diary_issues di
+           JOIN diaries d ON d.id=di.diary_id
+           JOIN projects p ON p.id=d.project_id
+           WHERE di.workflow_status IN ('pending','unresolved')
+             AND (di.description IS NOT NULL AND di.description != '')
+             {pf}
+           ORDER BY di.id DESC""".format(pf=proj_filter),
+        proj_params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = d["id"]
+        d["diary_id"] = d["diary_id"]
+        out.append(d)
+    # Legacy fallback: diaries with no child issues but a legacy single issue.
+    legacy_rows = c.execute(
+        """SELECT d.*, p.name AS project_name FROM diaries d
+           JOIN projects p ON p.id=d.project_id
+           WHERE (d.issues IS NOT NULL AND d.issues != '')
+             AND d.workflow_status IN ('pending','unresolved')
+             AND NOT EXISTS (SELECT 1 FROM diary_issues di WHERE di.diary_id=d.id)
+             {pf}""".format(pf=proj_filter),
+        proj_params).fetchall()
+    for lr in legacy_rows:
+        pseudo = _legacy_issue_dict(lr)
+        if not pseudo:
+            continue
+        pseudo["date"] = lr["date"]
+        pseudo["project_name"] = lr["name"]
+        pseudo["project_id"] = lr["project_id"]
+        pseudo["diary_id"] = lr["id"]
+        out.append(pseudo)
+    out.sort(key=lambda x: (x.get("id") or 0), reverse=True)
+    return out
+
+
+def _legacy_issue_dict(diary_row):
+    """Synthesise a single pseudo-issue from legacy diary columns.
+
+    Used only for read paths that still expect one issue per diary (the
+    legacy ``diaries.issues`` column).  New code should read the child table.
+    """
+    if not diary_row:
+        return None
+    d = dict(diary_row)
+    if not (d.get("issues") or "").strip():
+        return None
+    return {
+        "id": None,
+        "diary_id": d.get("id"),
+        "description": d.get("issues") or "",
+        "cause": d.get("cause") or "",
+        "related_party": d.get("related_party") or "",
+        "suggestion": d.get("issue_status") or "",
+        "level": d.get("issue_level") or "none",
+        "workflow_status": d.get("workflow_status") or "pending",
+        "resolved_at": d.get("resolved_at"),
+        "notified_at": d.get("issue_notified_at"),
+    }
+
+
+def _parse_issue_payload(form):
+    """Parse dynamic multi-issue rows from a submitted form.
+
+    Field naming per row index i (0-based):
+      issue_count            hidden row count
+      issue_{i}_desc         description (required for the row to count)
+      issue_{i}_cause        cause
+      issue_{i}_related      related party
+      issue_{i}_suggestion   suggestion / issue_status
+      issue_{i}_level        none|low|medium|high
+      issue_{i}_workflow     pending|unresolved|resolved
+      issue_{i}_resolved     resolve date
+      issue_{i}_photo_ids    comma-separated existing photo ids for this issue
+      issue_{i}_id            existing diary_issues.id (edit); preserved so the
+                              durable ``notified_at`` marker survives edits.
+
+    Backward compatible: when no ``issue_count`` is submitted the legacy
+    single-issue fields are synthesised into one issue so old clients keep
+    working.  Rows with an empty description are skipped.
+    """
+    raw = form.getlist("issue_count")
+    count = 0
+    if raw:
+        try:
+            count = int(raw[0])
+        except (ValueError, TypeError):
+            count = 0
+    if not count:
+        desc = form.get("issues", "")
+        if desc and str(desc).strip():
+            ws = _norm_workflow(form.get("workflow_status", "none"))
+            resolved = form.get("resolved_at", "") or None
+            ws, resolved = _resolve_date_logic(ws, resolved)
+            return [{
+                "id": None,
+                "description": str(desc),
+                "cause": _sanitize_text(form.get("cause", "")),
+                "related_party": _sanitize_text(form.get("related_party", "")),
+                "suggestion": form.get("issue_status", ""),
+                "level": _norm_issue_level(form.get("issue_level", "none")),
+                "workflow_status": ws,
+                "resolved_at": resolved,
+                "photo_ids": [],
+            }]
+        return []
+    issues = []
+    for i in range(count):
+        desc = form.get(f"issue_{i}_desc", "") or ""
+        if not str(desc).strip():
+            continue
+        ws = _norm_workflow(form.get(f"issue_{i}_workflow", "none"))
+        resolved = form.get(f"issue_{i}_resolved", "") or None
+        ws, resolved = _resolve_date_logic(ws, resolved)
+        photo_ids = []
+        for x in form.getlist(f"issue_{i}_photo_ids"):
+            try:
+                photo_ids.append(int(x))
+            except (ValueError, TypeError):
+                pass
+        existing_id = None
+        raw_id = form.get(f"issue_{i}_id", "")
+        if raw_id:
+            try:
+                existing_id = int(raw_id)
+            except (ValueError, TypeError):
+                existing_id = None
+        issues.append({
+            "id": existing_id,
+            "description": str(desc),
+            "cause": _sanitize_text(form.get(f"issue_{i}_cause", "")),
+            "related_party": _sanitize_text(form.get(f"issue_{i}_related", "")),
+            "suggestion": form.get(f"issue_{i}_suggestion", ""),
+            "level": _norm_issue_level(form.get(f"issue_{i}_level", "none")),
+            "workflow_status": ws,
+            "resolved_at": resolved,
+            "photo_ids": photo_ids,
+        })
+    return issues
+
+
+def _save_diary_issues(c, diary_id, issues_payload):
+    """Replace child issues for a diary and link existing photos.
+
+    Returns ``(created_rows, alert_triggers)`` where ``alert_triggers`` is a
+    list of issue dicts whose level is ``high`` and has never been notified.
+
+    Edit semantics: rows that carry an existing ``id`` are updated in place so
+    the durable ``notified_at`` marker survives edits (no duplicate alert on
+    ordinary edit).  Rows without an id are inserted.  Any child id that is no
+    longer present in the payload is deleted.
+    """
+    c.execute("UPDATE diary_photos SET issue_id=NULL WHERE diary_id=?", (diary_id,))
+    existing = {r["id"]: dict(r) for r in c.execute(
+        "SELECT * FROM diary_issues WHERE diary_id=?", (diary_id,)).fetchall()}
+    seen_ids = set()
+    created = []
+    alerts = []
+    single_existing = [i for i in existing.values()] if len(existing) == 1 else []
+    for payload in issues_payload:
+        pid = payload.get("id")
+        if pid and pid in existing:
+            seen_ids.add(pid)
+            prev = existing[pid]
+            c.execute(
+                """UPDATE diary_issues SET description=?, cause=?, related_party=?,
+                       suggestion=?, level=?, workflow_status=?, resolved_at=?
+                   WHERE id=? AND diary_id=?""",
+                (payload["description"], payload["cause"], payload["related_party"],
+                 payload["suggestion"], payload["level"], payload["workflow_status"],
+                 payload["resolved_at"], pid, diary_id))
+            row = dict(prev)
+            row.update({
+                "description": payload["description"], "cause": payload["cause"],
+                "related_party": payload["related_party"], "suggestion": payload["suggestion"],
+                "level": payload["level"], "workflow_status": payload["workflow_status"],
+                "resolved_at": payload["resolved_at"],
+            })
+            row = _norm_issue_row(row)
+        elif not pid and single_existing:
+            # Legacy single-issue client: update the one existing child in place
+            # so the durable notified_at marker survives re-saves.
+            prev = single_existing[0]
+            pid = prev["id"]
+            seen_ids.add(pid)
+            c.execute(
+                """UPDATE diary_issues SET description=?, cause=?, related_party=?,
+                       suggestion=?, level=?, workflow_status=?, resolved_at=?
+                   WHERE id=? AND diary_id=?""",
+                (payload["description"], payload["cause"], payload["related_party"],
+                 payload["suggestion"], payload["level"], payload["workflow_status"],
+                 payload["resolved_at"], pid, diary_id))
+            row = dict(prev)
+            row.update({
+                "description": payload["description"], "cause": payload["cause"],
+                "related_party": payload["related_party"], "suggestion": payload["suggestion"],
+                "level": payload["level"], "workflow_status": payload["workflow_status"],
+                "resolved_at": payload["resolved_at"],
+            })
+            row = _norm_issue_row(row)
+        else:
+            cur = c.execute(
+                """INSERT INTO diary_issues (diary_id, description, cause, related_party,
+                       suggestion, level, workflow_status, resolved_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (diary_id, payload["description"], payload["cause"],
+                 payload["related_party"], payload["suggestion"], payload["level"],
+                 payload["workflow_status"], payload["resolved_at"]))
+            if IS_PG:
+                pid = cur.fetchone()["id"]
+            else:
+                pid = cur.lastrowid
+            seen_ids.add(pid)
+            row = _norm_issue_row(
+                c.execute("SELECT * FROM diary_issues WHERE id=?", (pid,)).fetchone())
+        for ph_id in payload["photo_ids"]:
+            c.execute("UPDATE diary_photos SET issue_id=? WHERE id=? AND diary_id=?",
+                      (pid, ph_id, diary_id))
+        created.append(row)
+        if row["level"] == "high" and not row.get("notified_at"):
+            alerts.append(row)
+    for old_id in existing:
+        if old_id not in seen_ids:
+            c.execute("DELETE FROM diary_issues WHERE id=? AND diary_id=?",
+                      (old_id, diary_id))
+    return created, alerts
+
+
+def _mark_issue_alerted(c, issue_id):
+    """Durable per-issue notified marker, set before the Telegram call."""
+    from datetime import datetime as _dt
+    c.execute("UPDATE diary_issues SET notified_at=? WHERE id=?",
+              (_dt.now().strftime("%Y-%m-%d %H:%M:%S"), issue_id))
+
+
+async def _fire_issue_alert_for_issue(project_id, diary_id, issue_row):
+    """Send a Telegram alert for one new high-severity issue.
+
+    Called AFTER the DB commit so a Telegram failure can never roll back the
+    diary save.  Returns a status string ("sent"/"failed"/"skipped").
+    """
+    from app.telegram_bot import send_message, get_bot_token, sanitize_error
+    if not get_bot_token():
+        return "skipped"
+    c = connect()
+    try:
+        chat_ids = _issue_recipients(c, project_id)
+        prow = c.execute("SELECT d.*, p.name AS project_name FROM diaries d "
+                         "JOIN projects p ON p.id=d.project_id WHERE d.id=?",
+                         (diary_id,)).fetchone()
+    finally:
+        c.close()
+    if not chat_ids or not prow:
+        return "skipped"
+    prow = dict(prow)
+    level = {"low": "🟢 Nhẹ", "medium": "🟡 Trung bình", "high": "🔴 Nghiêm trọng"}.get(
+        issue_row.get("level", ""), "")
+    msg_lines = [
+        f"⚠️ <b>Có issue mới — dự án {prow.get('project_name', '')}</b>",
+        f"📅 Ngày: {prow.get('date', '')}",
+        f"🔴 Mức độ: {level}",
+        f"📝 Mô tả: {_html_escape(issue_row.get('description', ''))[:500]}",
+    ]
+    if issue_row.get("cause"):
+        msg_lines.append(f"🔍 Nguyên nhân: {_html_escape(issue_row.get('cause', ''))[:300]}")
+    if issue_row.get("related_party"):
+        msg_lines.append(f"👤 Liên quan: {_html_escape(issue_row.get('related_party', ''))[:200]}")
+    if issue_row.get("suggestion"):
+        msg_lines.append(f"💡 Kiến nghị: {_html_escape(issue_row.get('suggestion', ''))[:300]}")
+    msg = "\n".join(msg_lines)
+    if len(msg) > 4096:
+        msg = msg[:4095] + "…"
+    ok_count = 0
+    fail_count = 0
+    for chat_id in chat_ids:
+        try:
+            res = await send_message(chat_id, msg)
+        except Exception as exc:
+            res = {"ok": False, "error": sanitize_error(exc)}
+        if res and res.get("ok"):
+            ok_count += 1
+        else:
+            fail_count += 1
+    return "sent" if ok_count else "failed"
 
 
 def _resolve_date_logic(workflow_status, resolved_at):
@@ -767,6 +1094,9 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
     workflow_status = _norm_workflow(form.get("workflow_status", "none"))
     resolved_at = form.get("resolved_at", "") or None
     workflow_status, resolved_at = _resolve_date_logic(workflow_status, resolved_at)
+    # Dynamic multi-issue payload (new path).  Falls back to the legacy
+    # single-issue fields when the form does not submit issue_count.
+    issues_payload = _parse_issue_payload(form)
     # Auto-calculate total workers from all labor_ fields
     total_workers = 0
     for key, val in form.items():
@@ -894,33 +1224,34 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
             c.execute("UPDATE diary_photos SET photo_kind='issue' WHERE id=? AND diary_id=?",
                       (pid, diary_id))
 
-        # Resolve/reopen date logic + alert decision happen before commit so the
-        # marker is durable and the alert fires exactly once per high issue.
-        c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,))
-        prow = c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,)).fetchone()
-        prev_level = prow["issue_level"] if prow else None
-        prev_notified = prow["issue_notified_at"] if prow else None
-        alert_needed = _should_alert({"issue_level": prev_level, "issue_notified_at": prev_notified},
-                                     issue_level, prev_notified)
-        if alert_needed:
+        # New one-to-many write path: replace child issues and link photos.
+        created_issues, alert_triggers = _save_diary_issues(c, diary_id, issues_payload)
+        for issue in alert_triggers:
+            _mark_issue_alerted(c, issue["id"])
+
+        # Legacy single-issue marker kept for backward compatibility with old
+        # readers that still consult diaries.issue_notified_at.
+        if issues_payload and any(i["level"] == "high" for i in issues_payload):
             from datetime import datetime as _dt2
-            c.execute("UPDATE diaries SET issue_notified_at=? WHERE id=?",
+            c.execute("UPDATE diaries SET issue_level='high', issue_notified_at=? WHERE id=?",
                       (_dt2.now().strftime("%Y-%m-%d %H:%M:%S"), diary_id))
+        elif issues_payload:
+            top = issues_payload[0]
+            c.execute("UPDATE diaries SET issue_level=?, issue_status=?, cause=?, "
+                      "related_party=?, workflow_status=?, resolved_at=? WHERE id=?",
+                      (top["level"], top["suggestion"], top["cause"],
+                       top["related_party"], top["workflow_status"], top["resolved_at"],
+                       diary_id))
 
         c.commit()
         _cleanup_replaced_files(deferred_old)
 
         # Telegram alert runs AFTER commit; failure must not roll back the diary.
         alert_status = "skipped"
-        if alert_needed:
-            c2 = connect()
-            try:
-                prow2 = dict(c2.execute("SELECT d.*, p.name AS project_name FROM diaries d "
-                                        "JOIN projects p ON p.id=d.project_id WHERE d.id=?",
-                                        (diary_id,)).fetchone())
-            finally:
-                c2.close()
-            alert_status = await _fire_issue_alert(project_id, diary_id, prow2)
+        for issue in alert_triggers:
+            status = await _fire_issue_alert_for_issue(project_id, diary_id, issue)
+            if status != "skipped":
+                alert_status = status
     finally:
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
@@ -1329,6 +1660,15 @@ def diary_edit(request: Request, project_id: int, diary_id: int, user: Annotated
         materials = [dict(r) for r in c.execute("SELECT * FROM diary_materials WHERE diary_id=?", (diary_id,))]
         tasks = [dict(r) for r in c.execute("SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
         photos = [dict(r) for r in c.execute("SELECT * FROM diary_photos WHERE diary_id=?", (diary_id,))]
+        existing_issues = _load_diary_issues(c, diary_id)
+        # Backward-compat: a diary that was created before the child-table
+        # migration still carries its single issue in the legacy ``diaries``
+        # columns.  Prefill one pseudo-issue so the edit form does not render
+        # an empty §7 and the operator's existing text is not lost.
+        if not existing_issues:
+            pseudo = _legacy_issue_dict(diary_row)
+            if pseudo:
+                existing_issues = [pseudo]
     finally:
         c.close()
     return templates.TemplateResponse(request, "diary_form.html", {
@@ -1337,6 +1677,7 @@ def diary_edit(request: Request, project_id: int, diary_id: int, user: Annotated
         "prev_labor": existing_labor, "prev_machinery": existing_machinery,
         "prev_materials": materials, "prev_photos": photos,
         "diary": diary, "diary_id": diary_id, "existing_tasks": tasks,
+        "existing_issues": existing_issues,
     })
 
 
@@ -1573,6 +1914,9 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     workflow_status = _norm_workflow(form.get("workflow_status", "none"))
     resolved_at = form.get("resolved_at", "") or None
     workflow_status, resolved_at = _resolve_date_logic(workflow_status, resolved_at)
+    # Dynamic multi-issue payload (new path).  Falls back to the legacy
+    # single-issue fields when the form does not submit issue_count.
+    issues_payload = _parse_issue_payload(form)
     # Auto-calculate total workers from all labor_ fields
     total_workers = 0
     for key, val in form.items():
@@ -1672,29 +2016,24 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             c.execute("UPDATE diary_photos SET photo_kind='issue' WHERE id=? AND diary_id=?",
                       (pid, diary_id))
 
-        c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,))
-        prow = c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,)).fetchone()
-        prev_level = prow["issue_level"] if prow else None
-        prev_notified = prow["issue_notified_at"] if prow else None
-        alert_needed = _should_alert({"issue_level": prev_level, "issue_notified_at": prev_notified},
-                                     issue_level, prev_notified)
-        if alert_needed:
-            c.execute("UPDATE diaries SET issue_notified_at=? WHERE id=?",
-                      (_dt2.now().strftime("%Y-%m-%d %H:%M:%S"), diary_id))
+        # Multi-issue child rows (new path).  Falls back to legacy single-issue
+        # fields when the form does not submit issue_count.
+        created_issues, alert_triggers = _save_diary_issues(c, diary_id, issues_payload)
+        for issue in alert_triggers:
+            _mark_issue_alerted(c, issue["id"])
+        # Sync legacy diaries columns from the top issue so old readers keep working.
+        if created_issues:
+            top = created_issues[0]
+            c.execute("UPDATE diaries SET issue_level=?, issue_status=?, cause=?, "
+                      "related_party=?, issues=?, workflow_status=?, resolved_at=? WHERE id=?",
+                      (top["level"], top["suggestion"], top["cause"], top["related_party"],
+                       top["description"], top["workflow_status"], top["resolved_at"], diary_id))
 
         c.commit()
         _cleanup_replaced_files(deferred_old)
 
-        alert_status = "skipped"
-        if alert_needed:
-            c2 = connect()
-            try:
-                prow2 = dict(c2.execute("SELECT d.*, p.name AS project_name FROM diaries d "
-                                        "JOIN projects p ON p.id=d.project_id WHERE d.id=?",
-                                        (diary_id,)).fetchone())
-            finally:
-                c2.close()
-            alert_status = await _fire_issue_alert(project_id, diary_id, prow2)
+        for issue in alert_triggers:
+            await _fire_issue_alert_for_issue(project_id, diary_id, issue)
     finally:
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
@@ -1722,12 +2061,16 @@ def diary_preview(request: Request, project_id: int, diary_id: int, user: Annota
         materials = [dict(r) for r in c.execute("SELECT * FROM diary_materials WHERE diary_id=?", (diary_id,))]
         tasks = [dict(r) for r in c.execute("SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
         photos = [dict(r) for r in c.execute("SELECT * FROM diary_photos WHERE diary_id=?", (diary_id,))]
+        issues = _load_diary_issues(c, diary_id)
+        if not issues:
+            pseudo = _legacy_issue_dict(diary)
+            issues = [pseudo] if pseudo else []
     finally:
         c.close()
     return templates.TemplateResponse(request, "diary_preview.html", {
         "user": user, "project": project, "diary": diary,
         "labor": labor, "machinery": machinery, "materials": materials,
-        "tasks": tasks, "photos": photos,
+        "tasks": tasks, "photos": photos, "issues": issues,
     })
 
 

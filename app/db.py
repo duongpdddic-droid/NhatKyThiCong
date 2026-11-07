@@ -152,6 +152,79 @@ def _migrate_photo_kind_column(c):
                   "WHERE photo_kind IS NULL OR photo_kind=''")
 
 
+def _migrate_diary_issues_table(c):
+    """Additive migration: child table diary_issues + photo link column.
+
+    New writes go to the child table (one-to-many).  Legacy single-issue
+    columns on ``diaries`` are kept for backward compatibility / read-only.
+    Existing single-issue rows are migrated into the child table exactly once
+    (guarded by a settings flag) so old diaries display correctly through the
+    same read path.
+    """
+    if not IS_PG:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS diary_issues (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                diary_id INTEGER NOT NULL REFERENCES diaries(id) ON DELETE CASCADE,
+                description TEXT,
+                cause TEXT,
+                related_party TEXT,
+                suggestion TEXT,
+                level TEXT DEFAULT 'none',
+                workflow_status TEXT DEFAULT 'pending',
+                resolved_at TEXT,
+                notified_at TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        cols = _table_columns(c, "diary_photos")
+        if "issue_id" not in cols:
+            c.execute("ALTER TABLE diary_photos ADD COLUMN issue_id INTEGER "
+                      "REFERENCES diary_issues(id) ON DELETE CASCADE")
+    else:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS diary_issues (
+                id SERIAL PRIMARY KEY,
+                diary_id INTEGER NOT NULL REFERENCES diaries(id) ON DELETE CASCADE,
+                description TEXT,
+                cause TEXT,
+                related_party TEXT,
+                suggestion TEXT,
+                level TEXT DEFAULT 'none',
+                workflow_status TEXT DEFAULT 'pending',
+                resolved_at TEXT,
+                notified_at TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+        c.execute("ALTER TABLE diary_photos ADD COLUMN IF NOT EXISTS issue_id INTEGER "
+                  "REFERENCES diary_issues(id) ON DELETE CASCADE")
+
+    # Migrate legacy single-issue rows into the child table exactly once.
+    row = c.execute("SELECT value FROM settings WHERE key='diary_issues_migrated'").fetchone()
+    if not row or row["value"] != "1":
+        migrated = c.execute(
+            """SELECT id, issues, issue_level, issue_status, cause, related_party,
+                     workflow_status, resolved_at, issue_notified_at
+               FROM diaries WHERE issues IS NOT NULL AND issues != ''""").fetchall()
+        for d in migrated:
+            existing = c.execute(
+                "SELECT COUNT(*) AS n FROM diary_issues WHERE diary_id=?",
+                (d["id"],)).fetchone()["n"]
+            if existing:
+                continue
+            c.execute(
+                """INSERT INTO diary_issues (diary_id, description, cause, related_party,
+                       suggestion, level, workflow_status, resolved_at, notified_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (d["id"], d["issues"], d["cause"] or "", d["related_party"] or "",
+                 d["issue_status"] or "", d["issue_level"] or "none",
+                 d["workflow_status"] or "pending", d["resolved_at"],
+                 d["issue_notified_at"]))
+        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?,?)",
+                  ("diary_issues_migrated", "1"))
+
+
 _connecting = False
 
 
@@ -329,7 +402,21 @@ def init_db():
             is_previous INTEGER DEFAULT 0,
             uploaded_at TIMESTAMP DEFAULT NOW(),
             size_bytes INTEGER,
-            photo_kind TEXT DEFAULT 'work'
+            photo_kind TEXT DEFAULT 'work',
+            issue_id INTEGER REFERENCES diary_issues(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS diary_issues (
+            id SERIAL PRIMARY KEY,
+            diary_id INTEGER NOT NULL REFERENCES diaries(id) ON DELETE CASCADE,
+            description TEXT,
+            cause TEXT,
+            related_party TEXT,
+            suggestion TEXT,
+            level TEXT DEFAULT 'none',
+            workflow_status TEXT DEFAULT 'pending',
+            resolved_at TEXT,
+            notified_at TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS diary_tasks (
             id SERIAL PRIMARY KEY,
@@ -411,6 +498,7 @@ def init_db():
         _migrate_reminder_columns(c)
         _migrate_issue_columns(c)
         _migrate_photo_kind_column(c)
+        _migrate_diary_issues_table(c)
         import hashlib
         # Only create admin if not exists (never overwrite password)
         existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()

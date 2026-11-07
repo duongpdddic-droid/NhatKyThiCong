@@ -133,43 +133,74 @@
 
   <div class="section">
     <h2>§7 Vướng mắc & Kiến nghị</h2>
-    <div class="form-group">
-      <label>Mức độ</label>
-      <select name="issue_level">
-        <option value="none" {% if not diary or diary.issue_level == 'none' %}selected{% endif %}>Không có</option>
-        <option value="low" {% if diary and diary.issue_level == 'low' %}selected{% endif %}>🟢 Nhẹ</option>
-        <option value="medium" {% if diary and diary.issue_level == 'medium' %}selected{% endif %}>🟡 Trung bình</option>
-        <option value="high" {% if diary and diary.issue_level == 'high' %}selected{% endif %}>🔴 Nghiêm trọng</option>
-      </select>
+    <div id="issues-container">
+      {% for issue in (existing_issues or []) %}
+      <div class="issue-row" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;">
+        <input type="hidden" name="issue_{{ loop.index0 }}_id" value="{{ issue.id if issue.id else '' }}">
+        <div class="form-group">
+          <label>Mức độ</label>
+          <select name="issue_{{ loop.index0 }}_level">
+            <option value="none" {% if issue.level == 'none' %}selected{% endif %}>Không có</option>
+            <option value="low" {% if issue.level == 'low' %}selected{% endif %}>🟢 Nhẹ</option>
+            <option value="medium" {% if issue.level == 'medium' %}selected{% endif %}>🟡 Trung bình</option>
+            <option value="high" {% if issue.level == 'high' %}selected{% endif %}>🔴 Nghiêm trọng</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Vướng mắc <em>(bắt buộc)</em></label>
+          <textarea name="issue_{{ loop.index0 }}_desc" placeholder="Mô tả vấn đề gặp phải...">{{ issue.description }}</textarea>
+        </div>
+        <div class="form-group">
+          <label>Nguyên nhân</label>
+          <textarea name="issue_{{ loop.index0 }}_cause" placeholder="Nguyên nhân gây ra...">{{ issue.cause or '' }}</textarea>
+        </div>
+        <div class="form-group">
+          <label>Liên quan</label>
+          <input type="text" name="issue_{{ loop.index0 }}_related" value="{{ issue.related_party or '' }}" placeholder="Đơn vị/cá nhân liên quan">
+        </div>
+        <div class="form-group">
+          <label>Kiến nghị / Giải pháp</label>
+          <textarea name="issue_{{ loop.index0 }}_suggestion" placeholder="Đề xuất giải pháp, yêu cầu hỗ trợ...">{{ issue.suggestion or '' }}</textarea>
+        </div>
+        <div class="form-group">
+          <label>Trạng thái xử lý</label>
+          <select name="issue_{{ loop.index0 }}_workflow">
+            <option value="pending" {% if issue.workflow_status == 'pending' %}selected{% endif %}>Chưa xử lý</option>
+            <option value="unresolved" {% if issue.workflow_status == 'unresolved' %}selected{% endif %}>Chưa giải quyết</option>
+            <option value="resolved" {% if issue.workflow_status == 'resolved' %}selected{% endif %}>Đã giải quyết</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Ngày giải quyết</label>
+          <input type="date" name="issue_{{ loop.index0 }}_resolved" value="{{ issue.resolved_at or '' }}">
+        </div>
+        <div class="form-group">
+          <label>Ảnh liên quan issue này</label>
+          <div class="issue-photo-choices" style="display:flex;flex-wrap:wrap;gap:6px;">
+            {% for p in prev_photos %}
+              {% if p.issue_id == issue.id %}
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;">
+                <input type="checkbox" name="issue_{{ loop.index0 }}_photo_ids" value="{{ p.id }}" checked>
+                <img src="/uploads/{{ p.filename }}" style="width:32px;height:32px;object-fit:cover;border-radius:4px;" onerror="this.style.opacity='.3'">
+                <span>{{ p.caption or '' }}</span>
+              </label>
+              {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+        <button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); this.parentElement.remove(); syncIssueCount();">🗑️ Xóa issue này</button>
+      </div>
+      {% endfor %}
     </div>
-    <div class="form-group">
-      <label>Vướng mắc</label>
-      <textarea name="issues" placeholder="Mô tả vấn đề gặp phải...">{{ diary.issues if diary else '' }}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Nguyên nhân</label>
-      <textarea name="cause" placeholder="Nguyên nhân gây ra...">{{ diary.cause if diary else '' }}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Liên quan</label>
-      <input type="text" name="related_party" value="{{ diary.related_party if diary else '' }}" placeholder="Đơn vị/cá nhân liên quan">
-    </div>
-    <div class="form-group">
-      <label>Kiến nghị / Giải pháp</label>
-      <textarea name="issue_status" placeholder="Đề xuất giải pháp, yêu cầu hỗ trợ...">{{ diary.issue_status if diary else '' }}</textarea>
-    </div>
-    <div class="form-group">
-      <label>Trạng thái xử lý</label>
-      <select name="workflow_status">
-        <option value="pending" {% if not diary or diary.workflow_status == 'pending' %}selected{% endif %}>Chưa xử lý</option>
-        <option value="unresolved" {% if diary and diary.workflow_status == 'unresolved' %}selected{% endif %}>Chưa giải quyết</option>
-        <option value="resolved" {% if diary and diary.workflow_status == 'resolved' %}selected{% endif %}>Đã giải quyết</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label>Ngày giải quyết</label>
-      <input type="date" name="resolved_at" value="{{ diary.resolved_at if diary else '' }}">
-    </div>
+    <button type="button" class="btn sm primary" onclick="event.preventDefault(); addIssue(); return false;">+ Thêm issue</button>
+    <input type="hidden" name="issue_count" id="issue-count" value="{{ (existing_issues or []) | length }}">
+    <input type="hidden" name="issues" value="">
+    <input type="hidden" name="issue_level" value="none">
+    <input type="hidden" name="issue_status" value="">
+    <input type="hidden" name="cause" value="">
+    <input type="hidden" name="related_party" value="">
+    <input type="hidden" name="workflow_status" value="none">
+    <input type="hidden" name="resolved_at" value="">
   </div>
 
   <div class="section">
@@ -365,6 +396,52 @@ function wireExistingPhotoButtons() {
 function removeExistingPhoto(btn) {
   const row = btn.closest('.form-row');
   if (row) row.remove();
+}
+
+function syncIssueCount() {
+  const n = document.querySelectorAll('#issues-container .issue-row').length;
+  document.getElementById('issue-count').value = n;
+}
+
+function addIssue() {
+  const container = document.getElementById('issues-container');
+  const idx = container.children.length;
+  const div = document.createElement('div');
+  div.className = 'issue-row';
+  div.style.border = '1px solid var(--border)';
+  div.style.borderRadius = '8px';
+  div.style.padding = '12px';
+  div.style.marginBottom = '10px';
+  div.innerHTML =
+    '<input type="hidden" name="issue_' + idx + '_id" value="">' +
+    '<div class="form-group"><label>Mức độ</label>' +
+    '<select name="issue_' + idx + '_level">' +
+    '<option value="none">Không có</option>' +
+    '<option value="low">🟢 Nhẹ</option>' +
+    '<option value="medium">🟡 Trung bình</option>' +
+    '<option value="high">🔴 Nghiêm trọng</option>' +
+    '</select></div>' +
+    '<div class="form-group"><label>Vướng mắc <em>(bắt buộc)</em></label>' +
+    '<textarea name="issue_' + idx + '_desc" placeholder="Mô tả vấn đề gặp phải..."></textarea></div>' +
+    '<div class="form-group"><label>Nguyên nhân</label>' +
+    '<textarea name="issue_' + idx + '_cause" placeholder="Nguyên nhân gây ra..."></textarea></div>' +
+    '<div class="form-group"><label>Liên quan</label>' +
+    '<input type="text" name="issue_' + idx + '_related" placeholder="Đơn vị/cá nhân liên quan"></div>' +
+    '<div class="form-group"><label>Kiến nghị / Giải pháp</label>' +
+    '<textarea name="issue_' + idx + '_suggestion" placeholder="Đề xuất giải pháp..."></textarea></div>' +
+    '<div class="form-group"><label>Trạng thái xử lý</label>' +
+    '<select name="issue_' + idx + '_workflow">' +
+    '<option value="pending">Chưa xử lý</option>' +
+    '<option value="unresolved">Chưa giải quyết</option>' +
+    '<option value="resolved">Đã giải quyết</option>' +
+    '</select></div>' +
+    '<div class="form-group"><label>Ngày giải quyết</label>' +
+    '<input type="date" name="issue_' + idx + '_resolved"></div>' +
+    '<div class="form-group"><label>Ảnh liên quan issue này</label>' +
+    '<div class="issue-photo-choices" style="display:flex;flex-wrap:wrap;gap:6px;"></div></div>' +
+    '<button type="button" class="btn sm" style="color:var(--danger);" onclick="event.preventDefault(); this.parentElement.remove(); syncIssueCount();">🗑️ Xóa issue này</button>';
+  container.appendChild(div);
+  syncIssueCount();
 }
 
 window.addEventListener('load', wireExistingPhotoButtons);

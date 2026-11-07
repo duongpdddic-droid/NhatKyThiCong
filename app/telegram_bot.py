@@ -453,6 +453,8 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
                JOIN machinery_types mt ON dm.machinery_type_id=mt.id WHERE dm.diary_id=?""", (diary_id,))]
         photos = [dict(r) for r in c.execute(
             "SELECT filename, caption FROM diary_photos WHERE diary_id=?", (diary_id,))]
+        issues = [dict(r) for r in c.execute(
+            "SELECT * FROM diary_issues WHERE diary_id=? ORDER BY id", (diary_id,))]
         # Get recipients with telegram_chat_id
         recipients = [dict(r) for r in c.execute(
             "SELECT * FROM recipients WHERE project_id=? AND telegram_chat_id IS NOT NULL AND telegram_chat_id != ''",
@@ -467,6 +469,18 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
             "SELECT * FROM users WHERE role='admin' AND telegram_chat_id IS NOT NULL AND telegram_chat_id != ''")]
     finally:
         c.close()
+
+    # Legacy single-issue fallback for rows that never migrated to the child
+    # table (backward-compat read path).
+    if not issues and diary.get("issues") and str(diary.get("issues", "")).strip():
+        issues.append({
+            "id": None, "description": diary.get("issues", ""),
+            "cause": diary.get("cause", ""), "related_party": diary.get("related_party", ""),
+            "suggestion": diary.get("issue_status", ""),
+            "level": diary.get("issue_level", "none"),
+            "workflow_status": diary.get("workflow_status", "pending"),
+            "resolved_at": diary.get("resolved_at"),
+        })
 
     # Collect all chat_ids to send to
     chat_ids = set()
@@ -494,7 +508,7 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
     weather_temp = _esc(diary.get("weather_temp", ""))
     total_workers = _esc(diary.get("total_workers", 0))
     notes = _esc(_trunc(diary.get("notes", ""), 1000))
-    issues = _esc(_trunc(diary.get("issues", ""), 1000))
+    legacy_issues = _esc(_trunc(diary.get("issues", ""), 1000))
     issue_status = _esc(_trunc(diary.get("issue_status", ""), 500))
     cause = _esc(_trunc(diary.get("cause", ""), 300))
     related_party = _esc(_trunc(diary.get("related_party", ""), 200))
@@ -522,18 +536,27 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
             lines.append(f"  • {_esc(m.get('name', ''))}: {m.get('hours')} máy")
     if notes:
         lines.append(f"\n📝 Ghi chú: {notes}")
-    if issues and str(diary.get("issues", "")).strip():
-        lines.append(f"\n⚠️ Vướng mắc {level}: {issues}")
-        if cause:
-            lines.append(f"🔍 Nguyên nhân: {cause}")
-        if related_party:
-            lines.append(f"👤 Liên quan: {related_party}")
-        if issue_status:
-            lines.append(f"Kiến nghị: {issue_status}")
-        if workflow:
-            lines.append(f"Trạng thái: {workflow}")
-        if resolved_at:
-            lines.append(f"Ngày giải quyết: {resolved_at}")
+    if issues:
+        lines.append("\n<b>⚠️ Vướng mắc & Kiến nghị</b>")
+        for idx, issue in enumerate(issues, 1):
+            lvl = {"none": "", "low": "🟢", "medium": "🟡", "high": "🔴"}.get(
+                issue.get("level", "none"), "")
+            desc = _esc(_trunc(issue.get("description", ""), 400))
+            ws = _esc(issue.get("workflow_status", ""))
+            lines.append(f"  <b>Issue #{idx}</b> {lvl} {desc}")
+            c2 = _esc(_trunc(issue.get("cause", ""), 200))
+            rp = _esc(_trunc(issue.get("related_party", ""), 150))
+            sug = _esc(_trunc(issue.get("suggestion", ""), 200))
+            if c2:
+                lines.append(f"    🔍 Nguyên nhân: {c2}")
+            if rp:
+                lines.append(f"    👤 Liên quan: {rp}")
+            if sug:
+                lines.append(f"    💡 Kiến nghị: {sug}")
+            if ws:
+                lines.append(f"    📌 Trạng thái: {ws}")
+            if issue.get("resolved_at"):
+                lines.append(f"    ✅ Ngày giải quyết: {_esc(issue.get('resolved_at', ''))}")
     lines.append(f"\n📸 Ảnh: {len(photos)} ảnh")
 
     msg = "\n".join(lines)

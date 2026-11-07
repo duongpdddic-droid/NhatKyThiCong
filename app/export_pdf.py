@@ -61,10 +61,26 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         tasks = [dict(r) for r in c.execute(
             "SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
         photos = [dict(r) for r in c.execute(
-                    "SELECT filename, caption, photo_kind FROM diary_photos WHERE diary_id=?",
+                    "SELECT filename, caption, photo_kind, issue_id FROM diary_photos WHERE diary_id=?",
+                    (diary_id,))]
+        issues = [dict(r) for r in c.execute(
+                    "SELECT * FROM diary_issues WHERE diary_id=? ORDER BY id",
                     (diary_id,))]
     finally:
         c.close()
+
+    # Legacy single-issue fallback for rows that never migrated to the child
+    # table (backward-compat read path).
+    if not issues and diary.get("issues") and diary["issues"].strip():
+        issues.append({
+            "id": None, "description": diary["issues"],
+            "cause": diary.get("cause") or "",
+            "related_party": diary.get("related_party") or "",
+            "suggestion": diary.get("issue_status") or "",
+            "level": diary.get("issue_level") or "none",
+            "workflow_status": diary.get("workflow_status") or "pending",
+            "resolved_at": diary.get("resolved_at"),
+        })
 
     # Resolve photo bytes from R2 (or local fallback) before building the PDF.
     sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -158,33 +174,28 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         story.append(Paragraph("5. GHI CHÚ", h2_style))
         story.append(Paragraph(diary["notes"], normal))
 
-    # Issues
-    if diary.get("issues") and diary["issues"].strip():
+    # Issues (one-to-many child table, legacy fallback synthesised above).
+    level_map = {"low": "🟢 Nhẹ", "medium": "🟡 Trung bình", "high": "🔴 Nghiêm trọng"}
+    if issues:
         story.append(Paragraph("6. VƯỚNG MẮC & KIẾN NGHỊ", h2_style))
-        level_map = {"low": "🟢 Nhẹ", "medium": "🟡 Trung bình", "high": "🔴 Nghiêm trọng"}
-        story.append(Paragraph(f"Mức độ: {level_map.get(diary.get('issue_level', ''), '')}", normal))
-        story.append(Paragraph(f"Trạng thái: {diary.get('workflow_status', '')}", normal))
-        story.append(Paragraph(f"Vướng mắc: {diary['issues']}", normal))
-        if diary.get("cause"):
-            story.append(Paragraph(f"Nguyên nhân: {diary['cause']}", normal))
-        if diary.get("related_party"):
-            story.append(Paragraph(f"Liên quan: {diary['related_party']}", normal))
-        if diary.get("issue_status"):
-            story.append(Paragraph(f"Kiến nghị/Trạng thái: {diary['issue_status']}", normal))
-        if diary.get("resolved_at"):
-            story.append(Paragraph(f"Ngày giải quyết: {diary['resolved_at']}", normal))
-
-    # Photos — issue photos first, then work/site photos.
-    if photos:
-        story.append(Paragraph("7. ẢNH HIỆN TRƯỜNG", h2_style))
-        issue_photos = [p for p in photos if p.get("photo_kind") == "issue"]
-        work_photos = [p for p in photos if p.get("photo_kind") != "issue"]
-        for label, group in (("Ảnh liên quan issue", issue_photos),
-                             ("Ảnh công trình", work_photos)):
-            if not group:
-                continue
-            story.append(Paragraph(f"<i>{label}</i>", normal))
-            for p in group:
+        for idx, issue in enumerate(issues, 1):
+            story.append(Paragraph(
+                f"<b>Issue #{idx}</b> — Mức độ: "
+                f"{level_map.get(issue.get('level', ''), '')} | "
+                f"Trạng thái: {issue.get('workflow_status', '')}", normal))
+            story.append(Paragraph(f"Vướng mắc: {issue.get('description', '')}", normal))
+            if issue.get("cause"):
+                story.append(Paragraph(f"Nguyên nhân: {issue['cause']}", normal))
+            if issue.get("related_party"):
+                story.append(Paragraph(f"Liên quan: {issue['related_party']}", normal))
+            if issue.get("suggestion"):
+                story.append(Paragraph(f"Kiến nghị/Trạng thái: {issue['suggestion']}", normal))
+            if issue.get("resolved_at"):
+                story.append(Paragraph(f"Ngày giải quyết: {issue['resolved_at']}", normal))
+            issue_photos = [p for p in photos
+                            if p.get("issue_id") == issue.get("id")
+                            or (issue.get("id") is None and p.get("photo_kind") == "issue")]
+            for p in issue_photos:
                 data = p.get("_bytes")
                 if not data:
                     continue
@@ -196,6 +207,24 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
                     story.append(Spacer(1, 0.2*cm))
                 except Exception:
                     pass
+
+    # Photos — work/site photos only; per-issue photos already rendered in §6.
+    work_photos = [p for p in photos
+                   if not p.get("issue_id") and p.get("photo_kind") != "issue"]
+    if work_photos:
+        story.append(Paragraph("7. ẢNH HIỆN TRƯỜNG", h2_style))
+        for p in work_photos:
+            data = p.get("_bytes")
+            if not data:
+                continue
+            try:
+                img = Image(io.BytesIO(data), width=8*cm, height=6*cm)
+                story.append(img)
+                if p.get("caption"):
+                    story.append(Paragraph(p["caption"], normal))
+                story.append(Spacer(1, 0.2*cm))
+            except Exception:
+                pass
 
     # Signatures
     story.append(Spacer(1, 1*cm))
