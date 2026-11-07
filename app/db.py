@@ -116,20 +116,30 @@ def _migrate_issue_columns(c):
     intentionally preserved.  New columns hold the richer cause / related
     party / workflow / resolved-at / notification-marker state.
     """
-    cols = _table_columns(c, "diaries")
-    adds = []
-    if "cause" not in cols:
-        adds.append("ALTER TABLE diaries ADD COLUMN cause TEXT DEFAULT ''")
-    if "related_party" not in cols:
-        adds.append("ALTER TABLE diaries ADD COLUMN related_party TEXT DEFAULT ''")
-    if "workflow_status" not in cols:
-        adds.append("ALTER TABLE diaries ADD COLUMN workflow_status TEXT DEFAULT 'none'")
-    if "resolved_at" not in cols:
-        adds.append("ALTER TABLE diaries ADD COLUMN resolved_at TEXT")
-    if "issue_notified_at" not in cols:
-        adds.append("ALTER TABLE diaries ADD COLUMN issue_notified_at TEXT")
-    for sql in adds:
-        c.execute(sql)
+    if IS_PG:
+        for col, sql in [
+            ("cause", "ALTER TABLE diaries ADD COLUMN IF NOT EXISTS cause TEXT DEFAULT ''"),
+            ("related_party", "ALTER TABLE diaries ADD COLUMN IF NOT EXISTS related_party TEXT DEFAULT ''"),
+            ("workflow_status", "ALTER TABLE diaries ADD COLUMN IF NOT EXISTS workflow_status TEXT DEFAULT 'none'"),
+            ("resolved_at", "ALTER TABLE diaries ADD COLUMN IF NOT EXISTS resolved_at TEXT"),
+            ("issue_notified_at", "ALTER TABLE diaries ADD COLUMN IF NOT EXISTS issue_notified_at TEXT"),
+        ]:
+            c.execute(sql)
+    else:
+        cols = _table_columns(c, "diaries")
+        adds = []
+        if "cause" not in cols:
+            adds.append("ALTER TABLE diaries ADD COLUMN cause TEXT DEFAULT ''")
+        if "related_party" not in cols:
+            adds.append("ALTER TABLE diaries ADD COLUMN related_party TEXT DEFAULT ''")
+        if "workflow_status" not in cols:
+            adds.append("ALTER TABLE diaries ADD COLUMN workflow_status TEXT DEFAULT 'none'")
+        if "resolved_at" not in cols:
+            adds.append("ALTER TABLE diaries ADD COLUMN resolved_at TEXT")
+        if "issue_notified_at" not in cols:
+            adds.append("ALTER TABLE diaries ADD COLUMN issue_notified_at TEXT")
+        for sql in adds:
+            c.execute(sql)
     if not IS_PG:
         c.execute("UPDATE diaries SET workflow_status='none' "
                   "WHERE workflow_status IS NULL OR workflow_status=''")
