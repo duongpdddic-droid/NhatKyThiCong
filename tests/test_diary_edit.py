@@ -33,9 +33,14 @@ def client():
         DB_PATH.unlink()
     dbmod.init_db()
     c = connect()
+    c.execute("DELETE FROM users WHERE username='admin'")
+    c.execute("DELETE FROM sqlite_sequence WHERE name='users'")
     c.execute("INSERT INTO projects (name) VALUES (?)", ("Test Project",))
+    # foreman (writer role, id=1) assigned to project 1 — the seeded admin
+    # would otherwise own id=1 and silently bypass assignment checks.
     c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
-              ("viewer", hashlib.sha256("pass".encode()).hexdigest(), "Viewer", "viewer"))
+              ("foreman", "x", "Foreman", "foreman"))
+    c.execute("INSERT OR IGNORE INTO user_projects (user_id, project_id) VALUES (1, 1)")
     c.commit()
     # seed a diary with notes/issues/tasks
     c.execute("INSERT INTO diaries (project_id, date, weather_temp, weather_desc, foreman, total_workers, notes, issues, issue_level, issue_status) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -45,7 +50,7 @@ def client():
               (did, "Be tong", 10.5, "m3", 50.0))
     c.commit()
     c.close()
-    token = create_access_token({"user_id": 1, "role": "viewer"})
+    token = create_access_token({"user_id": 1, "role": "foreman"})
     with TestClient(mainmod.app) as tc:
         tc.cookies["access_token"] = token
         yield tc, did

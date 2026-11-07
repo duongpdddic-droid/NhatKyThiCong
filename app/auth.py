@@ -77,3 +77,103 @@ def require_role(*roles):
             raise HTTPException(status_code=403, detail="Không có quyền")
         return user
     return dep
+
+
+# FastAPI resolves the path parameter ``project_id`` / ``diary_id`` and the
+# injected ``request`` into these thin callables, so the authorization check
+# is bound to the actual URL the caller used rather than a value captured at
+# import time.  Routes declare them via ``Annotated[..., Depends(...)]``.
+def project_access_dep(project_id: int, request: Request):
+    return require_project_access(project_id, request)
+
+
+def diary_access_dep(diary_id: int, request: Request):
+    return require_diary_access(diary_id, request)
+
+
+# Read-only roles (viewer / supervisor / investor) may READ assigned projects
+# and diaries but never create, edit, delete or send.  Only admin and foreman
+# hold write rights; the check runs after project/diary access so an
+# unassigned writer is still denied, and a read-only member of an assigned
+# project is denied the write even though they can see the project.
+_WRITER_ROLES = ("admin", "foreman")
+
+
+def project_write_dep(project_id: int, request: Request):
+    user = require_project_access(project_id, request)
+    if user["role"] not in _WRITER_ROLES:
+        raise HTTPException(status_code=403, detail="Chỉ người dùng có quyền ghi mới thực hiện được thao tác này")
+    return user
+
+
+def diary_write_dep(diary_id: int, request: Request):
+    user = require_diary_access(diary_id, request)
+    if user["role"] not in _WRITER_ROLES:
+        raise HTTPException(status_code=403, detail="Chỉ người dùng có quyền ghi mới thực hiện được thao tác này")
+    return user
+
+
+def _is_admin(user):
+    return bool(user) and user.get("role") == "admin"
+
+
+def require_project_access(project_id: int, request: Request):
+    """Server-side project authorization dependency.
+
+    ``project_id`` is injected by FastAPI from the route's path parameter, so
+    the check is bound to the actual URL the caller used.  Admins bypass
+    assignment; every other role must be present in ``user_projects`` for
+    ``project_id``.  Denial is 403 (or 302 to /login when unauthenticated),
+    enforced on every protected route so hidden template controls can never
+    grant access.
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=302, headers={"Location": "/login"})
+    if _is_admin(user):
+        return user
+    from app.db import connect
+    c = connect()
+    try:
+        row = c.execute(
+            "SELECT 1 FROM user_projects WHERE user_id=? AND project_id=?",
+            (user["id"], project_id)).fetchone()
+    finally:
+        c.close()
+    if not row:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập dự án này")
+    return user
+
+
+def require_diary_access(diary_id: int, request: Request):
+    """Authorization keyed on the diary's owning project.
+
+    Used by edit/save/delete/preview/pdf/send-telegram: the caller must be
+    assigned to the project that *owns* the diary (or be admin).  A non-existent
+    diary yields 404 so callers cannot probe for project ids.
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=302, headers={"Location": "/login"})
+    if _is_admin(user):
+        return user
+    from app.db import connect
+    c = connect()
+    try:
+        row = c.execute(
+            "SELECT project_id FROM diaries WHERE id=?", (diary_id,)).fetchone()
+    finally:
+        c.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Nhật ký không tồn tại")
+    project_id = row["project_id"]
+    c = connect()
+    try:
+        row2 = c.execute(
+            "SELECT 1 FROM user_projects WHERE user_id=? AND project_id=?",
+            (user["id"], project_id)).fetchone()
+    finally:
+        c.close()
+    if not row2:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập dự án này")
+    return user

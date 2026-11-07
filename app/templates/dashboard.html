@@ -14,6 +14,13 @@
 </div>
 {% endif %}
 
+{% if n_issues %}
+<div class="alert" style="background:#fee2e2;color:#991b1b;border:1px solid #fecaca;">
+  ⚠️ Có <strong>{{ n_issues }}</strong> issues chưa giải quyết —
+  <a href="/admin/issues" style="color:#991b1b;text-decoration:underline;">Xem danh sách →</a>
+</div>
+{% endif %}
+
 {% for p in projects %}
 <div class="project-card">
   <h3>{{ p.name }}</h3>

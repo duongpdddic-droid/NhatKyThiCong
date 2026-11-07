@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Bộ nhớ lưu trữ{% endblock %}
+{% block content %}
+<h2>💾 Bộ nhớ lưu trữ</h2>
+<a href="/admin/settings" class="btn sm">⚙️ Cài đặt</a>
+<a href="/admin/users" class="btn sm">👥 User</a>
+<a href="/admin/library" class="btn sm">📚 Thư viện</a>
+<a href="/admin/reminders" class="btn sm">🔔 Nhắc nhở</a>
+
+<div class="section" style="margin-top:12px;">
+  <p style="font-size:14px;">
+    Đã dùng: <b>{{ "{:,}".format(used) }}</b> bytes /
+    <b>{{ "{:,}".format(cap) }}</b> bytes
+    ({{ "%.1f"|format(pct) }}%)
+  </p>
+  <div style="height:14px;background:#e2e8f0;border-radius:8px;overflow:hidden;margin:8px 0;">
+    <div style="height:100%;width:{{ "%.0f"|format(pct) }}%;
+      background:{% if low %}#dc2626{% else %}#2563eb{% endif %};transition:width .3s;"></div>
+  </div>
+  {% if low %}
+  <div class="alert error" style="margin:8px 0;">⚠️ Đang ở mức trên 80% — kiểm tra dung lượng và xóa ảnh cũ nếu cần.</div>
+  {% else %}
+  <div class="alert" style="margin:8px 0;background:#dcfce7;color:#166534;border:1px solid #bbf7d0;">✅ Dung lượng còn đủ.</div>
+  {% endif %}
+
+  <p style="font-size:12px;color:var(--muted);">
+    {% if exact %}
+    Dung lượng được đồng bộ từ R2 (đầy đủ).
+    {% else %}
+    Dung lượng chưa đồng bộ — các hàng cũ không có size_bytes; dùng nút dưới để đồng bộ.
+    {% endif %}
+  </p>
+
+  <form method="post" action="/admin/storage/reconcile">
+    <button type="submit" class="btn primary sm">🔄 Đồng bộ dung lượng từ R2</button>
+  </form>
+  <p style="font-size:12px;color:var(--muted);margin-top:8px;">
+    Hành động này danh sách toàn bộ object trong bucket và cập nhật số bytes thực tế.
+    Chỉ admin thực hiện. Không tiết lộ credential.
+  </p>
+
+  <h3 style="margin-top:16px;">Cấu hình</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:13px;">
+    <tr><td style="padding:4px 8px;color:var(--muted);">Hạn mức tối đa</td><td style="padding:4px 8px;">{{ "{:,}".format(status.get('cap', 0)) }} bytes</td></tr>
+    <tr><td style="padding:4px 8px;color:var(--muted);">Giới hạn mỗi ảnh</td><td style="padding:4px 8px;">{{ "{:,}".format(status.get('max_bytes', 0)) }} bytes</td></tr>
+    <tr><td style="padding:4px 8px;color:var(--muted);">Giới hạn ảnh mỗi nhật ký</td><td style="padding:4px 8px;">{{ status.get('max_photos', 0) }}</td></tr>
+  </table>
+  <p style="font-size:12px;color:var(--muted);margin-top:8px;">
+    Cấu hình qua biến môi trường: <code>R2_MAX_STORAGE_BYTES</code>,
+    <code>R2_MAX_UPLOAD_BYTES</code>, <code>R2_MAX_PHOTOS_PER_DIARY</code>.
+  </p>
+</div>
+{% endblock %}

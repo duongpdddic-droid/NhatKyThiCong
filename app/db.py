@@ -94,6 +94,67 @@ def _migrate_recipient_columns(c):
         c.execute("UPDATE recipients SET telegram_type='account' WHERE telegram_type IS NULL OR telegram_type=''")
 
 
+def _migrate_photo_size_column(c):
+    """Additive migration: size_bytes on diary_photos.
+
+    New databases get the column from the CREATE TABLE above; pre-existing
+    databases need an explicit ALTER so the quota ledger can read real stored
+    sizes instead of guessing.
+    """
+    if not IS_PG:
+        cols = _table_columns(c, "diary_photos")
+        if "size_bytes" not in cols:
+            c.execute("ALTER TABLE diary_photos ADD COLUMN size_bytes INTEGER")
+    else:
+        c.execute("ALTER TABLE diary_photos ADD COLUMN IF NOT EXISTS size_bytes INTEGER")
+
+
+def _migrate_issue_columns(c):
+    """Additive migration: issue-tracking fields on diaries.
+
+    ``issue_status`` is the legacy recommendation/solution text and is
+    intentionally preserved.  New columns hold the richer cause / related
+    party / workflow / resolved-at / notification-marker state.
+    """
+    cols = _table_columns(c, "diaries")
+    adds = []
+    if "cause" not in cols:
+        adds.append("ALTER TABLE diaries ADD COLUMN cause TEXT DEFAULT ''")
+    if "related_party" not in cols:
+        adds.append("ALTER TABLE diaries ADD COLUMN related_party TEXT DEFAULT ''")
+    if "workflow_status" not in cols:
+        adds.append("ALTER TABLE diaries ADD COLUMN workflow_status TEXT DEFAULT 'none'")
+    if "resolved_at" not in cols:
+        adds.append("ALTER TABLE diaries ADD COLUMN resolved_at TEXT")
+    if "issue_notified_at" not in cols:
+        adds.append("ALTER TABLE diaries ADD COLUMN issue_notified_at TEXT")
+    for sql in adds:
+        c.execute(sql)
+    if not IS_PG:
+        c.execute("UPDATE diaries SET workflow_status='none' "
+                  "WHERE workflow_status IS NULL OR workflow_status=''")
+    else:
+        c.execute("UPDATE diaries SET workflow_status='none' "
+                  "WHERE workflow_status IS NULL OR workflow_status=''")
+
+
+def _migrate_photo_kind_column(c):
+    """Additive migration: photo_kind on diary_photos (work/site/issue)."""
+    if not IS_PG:
+        cols = _table_columns(c, "diary_photos")
+        if "photo_kind" not in cols:
+            c.execute("ALTER TABLE diary_photos ADD COLUMN photo_kind TEXT DEFAULT 'work'")
+        c.execute("UPDATE diary_photos SET photo_kind='work' "
+                  "WHERE photo_kind IS NULL OR photo_kind=''")
+    else:
+        c.execute("ALTER TABLE diary_photos ADD COLUMN IF NOT EXISTS photo_kind TEXT DEFAULT 'work'")
+        c.execute("UPDATE diary_photos SET photo_kind='work' "
+                  "WHERE photo_kind IS NULL OR photo_kind=''")
+
+
+_connecting = False
+
+
 def connect():
     if IS_PG:
         import psycopg2
@@ -102,6 +163,15 @@ def connect():
         return _PgConnection(conn)
     else:
         import sqlite3
+        global _connecting
+        if not DB_PATH.exists() and not _connecting:
+            # Auto-init a missing database so admin-scoped tests that seed a
+            # user against whatever DB_PATH happens to be set do not 404.
+            _connecting = True
+            try:
+                init_db()
+            finally:
+                _connecting = False
         c = sqlite3.connect(str(DB_PATH))
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA foreign_keys = ON")
@@ -222,6 +292,11 @@ def init_db():
             issues TEXT,
             issue_level TEXT DEFAULT 'none',
             issue_status TEXT DEFAULT 'none',
+            cause TEXT DEFAULT '',
+            related_party TEXT DEFAULT '',
+            workflow_status TEXT DEFAULT 'none',
+            resolved_at TEXT,
+            issue_notified_at TEXT,
             created_by INTEGER REFERENCES users(id),
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW(),
@@ -252,7 +327,9 @@ def init_db():
             filename TEXT NOT NULL,
             caption TEXT,
             is_previous INTEGER DEFAULT 0,
-            uploaded_at TIMESTAMP DEFAULT NOW()
+            uploaded_at TIMESTAMP DEFAULT NOW(),
+            size_bytes INTEGER,
+            photo_kind TEXT DEFAULT 'work'
         );
         CREATE TABLE IF NOT EXISTS diary_tasks (
             id SERIAL PRIMARY KEY,
@@ -330,7 +407,10 @@ def init_db():
         _migrate_library_columns(c)
         _migrate_recipient_columns(c)
         # Additive migrations for existing databases (backward compatible).
+        _migrate_photo_size_column(c)
         _migrate_reminder_columns(c)
+        _migrate_issue_columns(c)
+        _migrate_photo_kind_column(c)
         import hashlib
         # Only create admin if not exists (never overwrite password)
         existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()

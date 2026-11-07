@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 
 from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, Depends
+from typing import Annotated
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -22,6 +23,8 @@ from app.db import connect, init_db, IS_PG
 from app.auth import (
     hash_password, verify_password, create_access_token,
     get_current_user, require_user, require_role,
+    project_access_dep, diary_access_dep,
+    project_write_dep, diary_write_dep,
 )
 from app import r2
 
@@ -152,6 +155,19 @@ def dashboard(request: Request, user=Depends(require_user)):
                    WHERE up.user_id=? ORDER BY p.id DESC""", (user["id"],))]
         # Stats
         n_diaries = c.execute("SELECT COUNT(*) AS cnt FROM diaries").fetchone()["cnt"]
+        # Unresolved issue count (workflow_status pending/unresolved with a real issue).
+        if user["role"] == "admin":
+            n_issues = c.execute(
+                "SELECT COUNT(*) AS cnt FROM diaries WHERE issues IS NOT NULL "
+                "AND issues != '' AND workflow_status IN ('pending','unresolved')").fetchone()["cnt"]
+        else:
+            n_issues = c.execute(
+                """SELECT COUNT(*) AS cnt FROM diaries d
+                   WHERE d.issues IS NOT NULL AND d.issues != ''
+                   AND d.workflow_status IN ('pending','unresolved')
+                   AND d.project_id IN (SELECT p.id FROM projects p
+                       JOIN user_projects up ON p.id=up.project_id WHERE up.user_id=?)""",
+                (user["id"],)).fetchone()["cnt"]
         today = date.today().isoformat()
         has_today = False
         if projects:
@@ -165,7 +181,38 @@ def dashboard(request: Request, user=Depends(require_user)):
         c.close()
     return templates.TemplateResponse(request, "dashboard.html", {
         "user": user, "projects": projects, "n_diaries": n_diaries,
-        "has_today": has_today, "today": today,
+        "n_issues": n_issues, "has_today": has_today, "today": today,
+    })
+
+
+# ── Issues list ────────────────────────────────────────────────────────────────
+
+@app.get("/admin/issues", response_class=HTMLResponse)
+def issues_list(request: Request, user=Depends(require_role("admin"))):
+    c = connect()
+    try:
+        if user["role"] == "admin":
+            rows = c.execute(
+                """SELECT d.*, p.name AS project_name FROM diaries d
+                   JOIN projects p ON p.id=d.project_id
+                   WHERE d.issues IS NOT NULL AND d.issues != ''
+                     AND d.workflow_status IN ('pending','unresolved')
+                   ORDER BY d.date DESC""").fetchall()
+        else:
+            rows = c.execute(
+                """SELECT d.*, p.name AS project_name FROM diaries d
+                   JOIN projects p ON p.id=d.project_id
+                   JOIN user_projects up ON p.id=up.project_id
+                   WHERE d.issues IS NOT NULL AND d.issues != ''
+                     AND d.workflow_status IN ('pending','unresolved')
+                     AND up.user_id=?
+                   ORDER BY d.date DESC""", (user["id"],)).fetchall()
+        unresolved_count = len(rows)
+    finally:
+        c.close()
+    return templates.TemplateResponse(request, "issues_list.html", {
+        "user": user, "issues": [dict(r) for r in rows],
+        "unresolved_count": unresolved_count,
     })
 
 
@@ -219,7 +266,7 @@ def project_update(request: Request, project_id: int, user=Depends(require_role(
 
 
 @app.get("/projects/{project_id}", response_class=HTMLResponse)
-def project_detail(request: Request, project_id: int, user=Depends(require_user)):
+def project_detail(request: Request, project_id: int, user: Annotated[dict, Depends(project_access_dep)]):
     c = connect()
     try:
         project = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
@@ -240,7 +287,7 @@ def project_detail(request: Request, project_id: int, user=Depends(require_user)
 # ── Diary form ───────────────────────────────────────────────────────────────
 
 @app.get("/projects/{project_id}/diary/new", response_class=HTMLResponse)
-def diary_new(request: Request, project_id: int, date_str: str = None, user=Depends(require_user)):
+def diary_new(request: Request, project_id: int, user: Annotated[dict, Depends(project_write_dep)], date_str: str = None):
     c = connect()
     try:
         project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
@@ -276,6 +323,133 @@ def diary_new(request: Request, project_id: int, date_str: str = None, user=Depe
     })
 
 
+# ── Issue tracking helpers ──────────────────────────────────────────────────────
+
+_ISSUE_LEVELS = ("none", "low", "medium", "high")
+_WORKFLOW_STATUSES = ("pending", "resolved", "unresolved")
+
+
+def _sanitize_text(value):
+    """Strip raw HTML tags from user text so Telegram HTML parse_mode
+    cannot be abused for injection."""
+    import re
+    if value is None:
+        return ""
+    s = str(value)
+    s = re.sub(r"<[^>]*>", "", s)
+    return s.strip()
+
+
+def _html_escape(value):
+    import html
+    return html.escape(str(value) if value is not None else "", quote=False)
+
+
+def _norm_issue_level(v):
+    v = (v or "").strip().lower()
+    return v if v in _ISSUE_LEVELS else "none"
+
+
+def _norm_workflow(v):
+    v = (v or "").strip().lower()
+    return v if v in _WORKFLOW_STATUSES else "none"
+
+
+def _resolve_date_logic(workflow_status, resolved_at):
+    """Return (workflow_status, resolved_at) after applying resolve/reopen rules.
+
+    Resolving with no explicit date stamps today; reopening clears the date.
+    """
+    from datetime import date as _date
+    if workflow_status == "resolved":
+        if not resolved_at:
+            resolved_at = _date.today().isoformat()
+    else:
+        # pending / unresolved / none -> no resolution date.
+        resolved_at = None
+    return workflow_status, resolved_at
+
+
+def _issue_recipients(c, project_id):
+    """Chat ids for a project's configured Telegram recipients + assigned users."""
+    chat_ids = set()
+    for r in c.execute(
+            "SELECT telegram_chat_id FROM recipients WHERE project_id=? "
+            "AND telegram_chat_id IS NOT NULL AND telegram_chat_id != ''",
+            (project_id,)):
+        if r["telegram_chat_id"]:
+            chat_ids.add(r["telegram_chat_id"])
+    for r in c.execute(
+            """SELECT u.telegram_chat_id FROM users u
+               JOIN user_projects up ON u.id=up.user_id
+               WHERE up.project_id=? AND u.telegram_chat_id IS NOT NULL
+               AND u.telegram_chat_id != ''""", (project_id,)):
+        if r["telegram_chat_id"]:
+            chat_ids.add(r["telegram_chat_id"])
+    return chat_ids
+
+
+def _should_alert(diary_row, new_level, new_notified_at):
+    """Decide whether a high-severity alert must fire now.
+
+    Fires when the diary becomes high-severity and has not been notified for
+    high yet.  Escalation from non-high to high alerts exactly once; ordinary
+    edits of an already-notified high issue do not re-alert.
+    """
+    if new_level != "high":
+        return False
+    if new_notified_at:
+        return False
+    return True
+
+
+async def _fire_issue_alert(project_id, diary_id, diary_row):
+    """Send a concise Telegram alert for a new high-severity issue.
+
+    Called AFTER the DB commit so a Telegram failure can never roll back the
+    diary save.  Returns a status string ("sent"/"failed"/"skipped").
+    """
+    from app.telegram_bot import send_message, get_bot_token, sanitize_error
+    if not get_bot_token():
+        return "skipped"
+    c = connect()
+    try:
+        chat_ids = _issue_recipients(c, project_id)
+    finally:
+        c.close()
+    if not chat_ids:
+        return "skipped"
+    level = {"low": "🟢 Nhẹ", "medium": "🟡 Trung bình", "high": "🔴 Nghiêm trọng"}.get(
+        diary_row.get("issue_level", ""), "")
+    msg_lines = [
+        f"⚠️ <b>Có issue mới — dự án {diary_row.get('project_name', '')}</b>",
+        f"📅 Ngày: {diary_row.get('date', '')}",
+        f"🔴 Mức độ: {level}",
+        f"📝 Mô tả: {_html_escape(diary_row.get('issues', ''))[:500]}",
+    ]
+    if diary_row.get("cause"):
+        msg_lines.append(f"🔍 Nguyên nhân: {_html_escape(diary_row.get('cause', ''))[:300]}")
+    if diary_row.get("related_party"):
+        msg_lines.append(f"👤 Liên quan: {_html_escape(diary_row.get('related_party', ''))[:200]}")
+    if diary_row.get("issue_status"):
+        msg_lines.append(f"💡 Kiến nghị: {_html_escape(diary_row.get('issue_status', ''))[:300]}")
+    msg = "\n".join(msg_lines)
+    if len(msg) > 4096:
+        msg = msg[:4095] + "…"
+    ok_count = 0
+    fail_count = 0
+    for chat_id in chat_ids:
+        try:
+            res = await send_message(chat_id, msg)
+        except Exception as exc:
+            res = {"ok": False, "error": sanitize_error(exc)}
+        if res and res.get("ok"):
+            ok_count += 1
+        else:
+            fail_count += 1
+    return "sent" if ok_count else "failed"
+
+
 def _add_timemark(image_path, text):
     """Add timestamp watermark to image using Pillow."""
     try:
@@ -305,34 +479,67 @@ def _add_timemark(image_path, text):
         print("Timemark error:", e)
 
 
-async def _persist_photo(file_obj, diary_id: int, stamp: str) -> str | None:
-    """Read an uploaded file, apply the timemark, and store it.
+async def _persist_photo(file_obj, diary_id: int, stamp: str):
+    """Read an uploaded file, validate/normalize it, reserve quota, store it.
 
-    Returns the stored filename, or None when the upload is empty.  Storage
-    goes through ``r2.save_file`` so the bytes land in R2 when configured and
-    on the local filesystem otherwise.  The timemark is applied to a temp file
-    because Pillow works on paths; the temp file is removed afterwards.
+    Returns ``(filename, byte_count)`` on success or ``(None, error_msg)``
+    when the upload is empty, malformed, over-limit or the storage write
+    fails.  The quota ledger is released on any failure so nothing is
+    silently lost.
     """
     content = await file_obj.read()
     if not content:
-        return None
-    ext = Path(file_obj.filename).suffix or ".jpg"
+        return None, None
+    normalized, err = r2.validate_image(content)
+    if err:
+        return None, err
+    if not normalized:
+        return None, "Ảnh rỗng sau khi xử lý"
+    ext = Path(file_obj.filename).suffix.lower() or ".jpg"
     fname = f"diary_{diary_id}_{uuid.uuid4().hex}{ext}"
+    # Photo-count ceiling check (before touching storage).  The count is the
+    # only limit we can enforce before the timemark changes the byte size.
+    if r2.enabled():
+        c = connect()
+        try:
+            existing = c.execute(
+                "SELECT COUNT(*) AS n FROM diary_photos WHERE diary_id=?",
+                (diary_id,)).fetchone()["n"]
+        finally:
+            c.close()
+        photo_count = existing + 1
+    else:
+        photo_count = 1
     tmp = UPLOAD_DIR / f".tmp_{fname}"
     try:
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        tmp.write_bytes(content)
+        tmp.write_bytes(normalized)
         try:
             _add_timemark(str(tmp), stamp)
+            normalized = tmp.read_bytes()
         except Exception as te:
             print("Timemark error:", te)
-        r2.save_file(fname, tmp.read_bytes())
+        # Reserve against the FINAL stored size: the timemark can change the
+        # byte count, so the ledger must account for what actually lands on
+        # storage, not the raw upload.
+        final_size = len(normalized)
+        ok, msg = r2.reserve(final_size, photo_count)
+        if not ok:
+            return None, msg
+        r2.save_file(fname, normalized)
+    except Exception as exc:
+        r2.release(len(normalized))
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return None, "Lỗi lưu ảnh: %s" % exc
     finally:
         try:
             tmp.unlink()
         except OSError:
             pass
-    return fname
+    return fname, final_size
 
 
 async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions, form, prior_ids=None):
@@ -341,7 +548,7 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
     Replacements are written to storage first and only committed to the DB
     (replacing the old filename) *before* the transaction commits; the old
     object is removed only after a successful commit. Returns a list of old
-    filenames deferred for cleanup.
+    ``(filename, reserved_bytes)`` tuples deferred for cleanup.
 
     Only photos that already existed *before* this request are touched:
     ``prior_ids`` is a snapshot of the diary's photo ids taken before the
@@ -362,7 +569,7 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
     kept_ids = {int(pid) for pid in existing_ids if pid}
     prior_set = set(prior_ids) if prior_ids is not None else None
     deferred_old = []
-    rows = c.execute("SELECT id, filename FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()
+    rows = c.execute("SELECT id, filename, size_bytes FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()
     for row in rows:
         pid = int(row["id"])
         # Never delete a photo that was just inserted in this request.
@@ -370,12 +577,12 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
             continue
         if pid not in kept_ids:
             c.execute("DELETE FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id))
-            deferred_old.append(row["filename"])
+            deferred_old.append((row["filename"], int(row["size_bytes"] or 0)))
     for i, pid in enumerate(existing_ids):
         if not pid:
             continue
         pid = int(pid)
-        row = c.execute("SELECT filename, diary_id, caption FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id)).fetchone()
+        row = c.execute("SELECT filename, diary_id, caption, size_bytes FROM diary_photos WHERE id=? AND diary_id=?", (pid, diary_id)).fetchone()
         if not row:
             continue
         # Pick the first non-empty uploaded file for this photo id (gallery
@@ -384,11 +591,12 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
         f = next((x for x in files if x and getattr(x, "filename", "")), None)
         submitted_caption = existing_captions[i] if i < len(existing_captions) else ""
         if f:
-            fname = await _persist_photo(f, row["diary_id"], stamp)
+            fname, reserved = await _persist_photo(f, row["diary_id"], stamp)
             if fname:
                 cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
-                c.execute("UPDATE diary_photos SET filename=?, caption=? WHERE id=? AND diary_id=?", (fname, cap, pid, diary_id))
-                deferred_old.append(row["filename"])
+                c.execute("UPDATE diary_photos SET filename=?, caption=?, size_bytes=? WHERE id=? AND diary_id=?",
+                          (fname, cap, reserved, pid, diary_id))
+                deferred_old.append((row["filename"], int(row["size_bytes"] or 0)))
                 continue
         cap = submitted_caption if submitted_caption.strip() else (row["caption"] or "")
         c.execute("UPDATE diary_photos SET caption=? WHERE id=? AND diary_id=?", (cap, pid, diary_id))
@@ -396,10 +604,17 @@ async def _queue_photo_replacements(c, diary_id, existing_ids, existing_captions
 
 
 def _cleanup_replaced_files(deferred_old):
-    """Remove old objects only after the new ones are safely on storage."""
-    for old_filename in deferred_old:
-        if old_filename:
-            r2.delete_file(old_filename)
+    """Remove old objects only after the new ones are safely on storage.
+
+    ``deferred_old`` is a list of ``(filename, reserved_bytes)`` tuples.  The
+    old reservation is released *only* after ``delete_file`` confirms the old
+    object is gone, so a storage failure never frees quota that is still in use.
+    """
+    for old_filename, reserved in deferred_old:
+        if not old_filename:
+            continue
+        if r2.delete_file(old_filename):
+            r2.release(reserved)
 
 
 def _is_upload(value):
@@ -525,7 +740,7 @@ def _extract_new_photos(form):
 
 
 @app.post("/projects/{project_id}/diary/save")
-async def diary_save(request: Request, project_id: int, user=Depends(require_user)):
+async def diary_save(request: Request, project_id: int, user: Annotated[dict, Depends(project_write_dep)]):
     import traceback
     try:
         form = await request.form()
@@ -545,8 +760,13 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
     issues = form.get("issues", "")
-    issue_level = form.get("issue_level", "none")
-    issue_status = form.get("issue_status", "none")
+    issue_level = _norm_issue_level(form.get("issue_level", "none"))
+    issue_status = form.get("issue_status", "")
+    cause = _sanitize_text(form.get("cause", ""))
+    related_party = _sanitize_text(form.get("related_party", ""))
+    workflow_status = _norm_workflow(form.get("workflow_status", "none"))
+    resolved_at = form.get("resolved_at", "") or None
+    workflow_status, resolved_at = _resolve_date_logic(workflow_status, resolved_at)
     # Auto-calculate total workers from all labor_ fields
     total_workers = 0
     for key, val in form.items():
@@ -565,20 +785,25 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             diary_id = existing["id"]
             c.execute("""UPDATE diaries SET weather_temp=?, weather_desc=?, foreman=?,
                          total_workers=?, notes=?, issues=?, issue_level=?, issue_status=?,
+                         cause=?, related_party=?, workflow_status=?, resolved_at=?,
                          updated_at=datetime('now') WHERE id=?""",
                       (weather_temp, weather_desc, foreman, total_workers, notes, issues,
-                       issue_level, issue_status, diary_id))
+                       issue_level, issue_status, cause, related_party, workflow_status,
+                       resolved_at, diary_id))
             # Clear old children
             for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
                 c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
         else:
             cur = c.execute("""INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
-                             foreman, total_workers, notes, issues, issue_level, issue_status, created_by)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id""" if __import__("app.db", fromlist=["IS_PG"]).IS_PG else """INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
-                             foreman, total_workers, notes, issues, issue_level, issue_status, created_by)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                             foreman, total_workers, notes, issues, issue_level, issue_status,
+                             cause, related_party, workflow_status, resolved_at, created_by)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""" if __import__("app.db", fromlist=["IS_PG"]).IS_PG else """INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
+                             foreman, total_workers, notes, issues, issue_level, issue_status,
+                             cause, related_party, workflow_status, resolved_at, created_by)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (project_id, diary_date, weather_temp, weather_desc, foreman,
-                             total_workers, notes, issues, issue_level, issue_status, user["id"]))
+                             total_workers, notes, issues, issue_level, issue_status, cause,
+                             related_party, workflow_status, resolved_at, user["id"]))
             if __import__("app.db", fromlist=["IS_PG"]).IS_PG:
                 diary_id = cur.fetchone()["id"]
             else:
@@ -637,12 +862,23 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         from datetime import datetime as _dt
         stamp = _dt.now().strftime("%d/%m/%Y %H:%M")
+        issue_photo_ids = {int(x) for x in form.getlist("issue_photo_ids") if x}
+        photo_errors = []
         for f, caption in _extract_new_photos(form):
-            fname = await _persist_photo(f, diary_id, stamp)
+            fname, reserved = await _persist_photo(f, diary_id, stamp)
             if not fname:
+                photo_errors.append(reserved or "Lỗi upload ảnh")
                 continue
-            c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
-                      (diary_id, fname, caption if caption is not None else ""))
+            kind = "issue" if len(issue_photo_ids) == 1 else "work"
+            c.execute("INSERT INTO diary_photos (diary_id, filename, caption, size_bytes, photo_kind) VALUES (?,?,?,?,?)",
+                      (diary_id, fname, caption if caption is not None else "", reserved, kind))
+        if photo_errors:
+            c.rollback()
+            c.close()
+            return HTMLResponse(
+                "<h3>Lỗi upload ảnh</h3><ul>%s</ul>"
+                % "".join("<li>%s</li>" % e for e in photo_errors),
+                status_code=400)
 
         # Update/delete/replace existing photos
         existing_ids = form.getlist("existing_photo_ids")
@@ -653,8 +889,38 @@ async def diary_save(request: Request, project_id: int, user=Depends(require_use
         else:
             deferred_old = []
 
+        # Mark issue photos explicitly when the form says so.
+        for pid in issue_photo_ids:
+            c.execute("UPDATE diary_photos SET photo_kind='issue' WHERE id=? AND diary_id=?",
+                      (pid, diary_id))
+
+        # Resolve/reopen date logic + alert decision happen before commit so the
+        # marker is durable and the alert fires exactly once per high issue.
+        c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,))
+        prow = c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,)).fetchone()
+        prev_level = prow["issue_level"] if prow else None
+        prev_notified = prow["issue_notified_at"] if prow else None
+        alert_needed = _should_alert({"issue_level": prev_level, "issue_notified_at": prev_notified},
+                                     issue_level, prev_notified)
+        if alert_needed:
+            from datetime import datetime as _dt2
+            c.execute("UPDATE diaries SET issue_notified_at=? WHERE id=?",
+                      (_dt2.now().strftime("%Y-%m-%d %H:%M:%S"), diary_id))
+
         c.commit()
         _cleanup_replaced_files(deferred_old)
+
+        # Telegram alert runs AFTER commit; failure must not roll back the diary.
+        alert_status = "skipped"
+        if alert_needed:
+            c2 = connect()
+            try:
+                prow2 = dict(c2.execute("SELECT d.*, p.name AS project_name FROM diaries d "
+                                        "JOIN projects p ON p.id=d.project_id WHERE d.id=?",
+                                        (diary_id,)).fetchone())
+            finally:
+                c2.close()
+            alert_status = await _fire_issue_alert(project_id, diary_id, prow2)
     finally:
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
@@ -720,6 +986,49 @@ def admin_settings_save(request: Request, user=Depends(require_role("admin")),
     finally:
         c.close()
     return RedirectResponse(url="/admin/settings", status_code=302)
+
+
+# ── Admin: Storage quota ──────────────────────────────────────────────────────
+
+@app.get("/admin/storage", response_class=HTMLResponse)
+def admin_storage(request: Request, user=Depends(require_role("admin"))):
+    status = r2.quota_status()
+    used = r2.get_used_bytes()
+    cap = status["cap"]
+    pct = (used / cap * 100.0) if cap else 0.0
+    low = pct >= 80.0
+    exact = True
+    if r2.enabled():
+        try:
+            _, exact = r2.reconcile_from_inventory()
+        except Exception:
+            exact = False
+    else:
+        # No R2: the ledger is the only source of truth; treat as exact only
+        # when every row has a recorded size_bytes.
+        c = connect()
+        try:
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM diary_photos WHERE size_bytes IS NULL"
+            ).fetchone()
+            exact = not (row and row["n"])
+        finally:
+            c.close()
+    return templates.TemplateResponse(request, "admin_storage.html", {
+        "user": user, "status": status, "used": used, "cap": cap,
+        "pct": pct, "low": low, "exact": exact,
+    })
+
+
+@app.post("/admin/storage/reconcile")
+def admin_storage_reconcile(request: Request, user=Depends(require_role("admin"))):
+    if not r2.enabled():
+        return RedirectResponse(url="/admin/storage", status_code=302)
+    try:
+        r2.reconcile_from_inventory()
+    except Exception:
+        pass
+    return RedirectResponse(url="/admin/storage", status_code=302)
 
 
 # ── Admin: Reminder scheduler ─────────────────────────────────────────────────
@@ -992,11 +1301,21 @@ async def admin_user_projects_save(request: Request, user_id: int, user=Depends(
 # ── CRUD: Edit Diary ──────────────────────────────────────────────────────────
 
 @app.get("/projects/{project_id}/diary/{diary_id}/edit", response_class=HTMLResponse)
-def diary_edit(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+def diary_edit(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_write_dep)]):
     c = connect()
     try:
-        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
-        diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
+        # Fetch raw rows and validate BEFORE dict(): a missing project or
+        # diary must yield 404, not a TypeError from dict(None) leaking a
+        # 500 through the global exception handler.
+        project_row = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        diary_row = c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone()
+        # Reject URL/project mismatches: the diary must belong to the project
+        # in the path, otherwise a swapped project_id would render one
+        # project's diary under another project's heading.
+        if not project_row or not diary_row or diary_row["project_id"] != project_id:
+            raise HTTPException(status_code=404)
+        project = dict(project_row)
+        diary = dict(diary_row)
         _all_labor = [dict(r) for r in c.execute("SELECT * FROM labor_types ORDER BY sort_order")]
         _all_mach = [dict(r) for r in c.execute("SELECT * FROM machinery_types ORDER BY sort_order")]
         _el = {r["labor_type_id"] for r in c.execute("SELECT labor_type_id FROM diary_labor WHERE diary_id=?", (diary_id,))}
@@ -1022,16 +1341,29 @@ def diary_edit(request: Request, project_id: int, diary_id: int, user=Depends(re
 
 
 @app.post("/projects/{project_id}/diary/{diary_id}/delete")
-def diary_delete(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+def diary_delete(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_write_dep)]):
+    # Snapshot rows BEFORE the diary is removed (FK cascade wipes diary_photos).
     c = connect()
     try:
-        photos = [r["filename"] for r in c.execute(
-            "SELECT filename FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
+        drow = c.execute("SELECT project_id FROM diaries WHERE id=?", (diary_id,)).fetchone()
+        if not drow or drow["project_id"] != project_id:
+            raise HTTPException(status_code=404)
+        photos = [dict(r) for r in c.execute(
+            "SELECT filename, size_bytes FROM diary_photos WHERE diary_id=?",
+            (diary_id,)).fetchall()]
         c.execute("DELETE FROM diaries WHERE id=?", (diary_id,))
         c.commit()
     finally:
         c.close()
-    r2.delete_diary_objects(diary_id, photos)
+    # Quota is released only after the object is confirmed gone, so a failed
+    # deletion never frees bytes that are still stored.
+    released = 0
+    for p in photos:
+        if not p["filename"]:
+            continue
+        if r2.delete_file(p["filename"]):
+            released += int(p["size_bytes"] or 0)
+    r2.release(released)
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
 
 
@@ -1045,10 +1377,12 @@ def project_delete(request: Request, project_id: int, user=Depends(require_role(
     try:
         diary_ids = [r["id"] for r in c.execute(
             "SELECT id FROM diaries WHERE project_id=?", (project_id,)).fetchall()]
+        # Snapshot (filename, size_bytes) BEFORE the cascade wipes diary_photos.
         photos_by_diary = {}
         for did in diary_ids:
-            photos_by_diary[did] = [r["filename"] for r in c.execute(
-                "SELECT filename FROM diary_photos WHERE diary_id=?", (did,)).fetchall()]
+            photos_by_diary[did] = [dict(r) for r in c.execute(
+                "SELECT filename, size_bytes FROM diary_photos WHERE diary_id=?",
+                (did,)).fetchall()]
         # Remove child diaries (their children cascade via FK) before the project.
         for did in diary_ids:
             c.execute("DELETE FROM diaries WHERE id=?", (did,))
@@ -1056,8 +1390,16 @@ def project_delete(request: Request, project_id: int, user=Depends(require_role(
         c.commit()
     finally:
         c.close()
+    # Quota is released only for objects actually removed from storage.
+    removed = set()
     for did in diary_ids:
-        r2.delete_diary_objects(did, photos_by_diary.get(did, []))
+        removed.update(r2.delete_diary_objects(did, [p["filename"] for p in photos_by_diary.get(did, [])]))
+    released = 0
+    for did in diary_ids:
+        for p in photos_by_diary.get(did, []):
+            if p["filename"] in removed:
+                released += int(p["size_bytes"] or 0)
+    r2.release(released)
     return RedirectResponse(url="/", status_code=302)
 
 
@@ -1161,9 +1503,20 @@ def change_password(request: Request, user=Depends(require_user),
 # ── Telegram send (manual trigger) ────────────────────────────────────────────
 
 @app.post("/projects/{project_id}/diary/{diary_id}/send-telegram")
-async def send_telegram(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+async def send_telegram(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_write_dep)]):
     from urllib.parse import quote
     from app.telegram_bot import send_diary_report
+    # Telegram send is a project-scoped action: only callers assigned to the
+    # diary's project (or admin) may trigger it.  The recipient set is
+    # resolved inside send_diary_report; here we gate the caller's project
+    # access so an unassigned user cannot fire a report to anyone.
+    _c0 = connect()
+    try:
+        _drow = _c0.execute("SELECT project_id FROM diaries WHERE id=?", (diary_id,)).fetchone()
+    finally:
+        _c0.close()
+    if not _drow or _drow["project_id"] != project_id:
+        raise HTTPException(status_code=404)
     try:
         result = await send_diary_report(project_id, diary_id)
     except Exception as exc:
@@ -1186,10 +1539,20 @@ async def send_telegram(request: Request, project_id: int, diary_id: int, user=D
 
 
 @app.post("/projects/{project_id}/diary/{diary_id}/save")
-async def diary_edit_save(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+async def diary_edit_save(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_write_dep)]):
     import os as _os
     _os.makedirs(str(__import__("pathlib").Path(__file__).parent.parent / "uploads"), exist_ok=True)
     form = await request.form()
+    # Reject a swapped project_id: the diary must belong to the project in
+    # the path, otherwise one project's diary could be rewritten under
+    # another project's URL.
+    _c0 = connect()
+    try:
+        _drow = _c0.execute("SELECT project_id FROM diaries WHERE id=?", (diary_id,)).fetchone()
+    finally:
+        _c0.close()
+    if not _drow or _drow["project_id"] != project_id:
+        raise HTTPException(status_code=404)
     diary_date = form.get("date", "")
     weather_temp = form.get("weather_temp")
     if weather_temp == "":
@@ -1203,8 +1566,13 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
     issues = form.get("issues", "")
-    issue_level = form.get("issue_level", "none")
-    issue_status = form.get("issue_status", "none")
+    issue_level = _norm_issue_level(form.get("issue_level", "none"))
+    issue_status = form.get("issue_status", "")
+    cause = _sanitize_text(form.get("cause", ""))
+    related_party = _sanitize_text(form.get("related_party", ""))
+    workflow_status = _norm_workflow(form.get("workflow_status", "none"))
+    resolved_at = form.get("resolved_at", "") or None
+    workflow_status, resolved_at = _resolve_date_logic(workflow_status, resolved_at)
     # Auto-calculate total workers from all labor_ fields
     total_workers = 0
     for key, val in form.items():
@@ -1218,9 +1586,11 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     try:
         c.execute("""UPDATE diaries SET date=?, weather_temp=?, weather_desc=?, foreman=?,
                      total_workers=?, notes=?, issues=?, issue_level=?, issue_status=?,
+                     cause=?, related_party=?, workflow_status=?, resolved_at=?,
                      updated_at=datetime('now') WHERE id=?""",
                   (diary_date, weather_temp, weather_desc, foreman, total_workers, notes,
-                   issues, issue_level, issue_status, diary_id))
+                   issues, issue_level, issue_status, cause, related_party, workflow_status,
+                   resolved_at, diary_id))
         for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
             c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
 
@@ -1272,12 +1642,23 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         from datetime import datetime as _dt2
         stamp = _dt2.now().strftime("%d/%m/%Y %H:%M")
+        issue_photo_ids = {int(x) for x in form.getlist("issue_photo_ids") if x}
+        photo_errors = []
         for f, caption in _extract_new_photos(form):
-            fname = await _persist_photo(f, diary_id, stamp)
+            fname, reserved = await _persist_photo(f, diary_id, stamp)
             if not fname:
+                photo_errors.append(reserved or "Lỗi upload ảnh")
                 continue
-            c.execute("INSERT INTO diary_photos (diary_id, filename, caption) VALUES (?,?,?)",
-                      (diary_id, fname, caption if caption is not None else ""))
+            kind = "issue" if len(issue_photo_ids) == 1 else "work"
+            c.execute("INSERT INTO diary_photos (diary_id, filename, caption, size_bytes, photo_kind) VALUES (?,?,?,?,?)",
+                      (diary_id, fname, caption if caption is not None else "", reserved, kind))
+        if photo_errors:
+            c.rollback()
+            c.close()
+            return HTMLResponse(
+                "<h3>Lỗi upload ảnh</h3><ul>%s</ul>"
+                % "".join("<li>%s</li>" % e for e in photo_errors),
+                status_code=400)
 
         existing_ids = form.getlist("existing_photo_ids")
         existing_captions = form.getlist("existing_photo_captions")
@@ -1287,19 +1668,51 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         else:
             deferred_old = []
 
+        for pid in issue_photo_ids:
+            c.execute("UPDATE diary_photos SET photo_kind='issue' WHERE id=? AND diary_id=?",
+                      (pid, diary_id))
+
+        c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,))
+        prow = c.execute("SELECT issue_level, issue_notified_at FROM diaries WHERE id=?", (diary_id,)).fetchone()
+        prev_level = prow["issue_level"] if prow else None
+        prev_notified = prow["issue_notified_at"] if prow else None
+        alert_needed = _should_alert({"issue_level": prev_level, "issue_notified_at": prev_notified},
+                                     issue_level, prev_notified)
+        if alert_needed:
+            c.execute("UPDATE diaries SET issue_notified_at=? WHERE id=?",
+                      (_dt2.now().strftime("%Y-%m-%d %H:%M:%S"), diary_id))
+
         c.commit()
         _cleanup_replaced_files(deferred_old)
+
+        alert_status = "skipped"
+        if alert_needed:
+            c2 = connect()
+            try:
+                prow2 = dict(c2.execute("SELECT d.*, p.name AS project_name FROM diaries d "
+                                        "JOIN projects p ON p.id=d.project_id WHERE d.id=?",
+                                        (diary_id,)).fetchone())
+            finally:
+                c2.close()
+            alert_status = await _fire_issue_alert(project_id, diary_id, prow2)
     finally:
         c.close()
     return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
 
 
 @app.get("/projects/{project_id}/diary/{diary_id}/preview", response_class=HTMLResponse)
-def diary_preview(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+def diary_preview(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_access_dep)]):
     c = connect()
     try:
-        diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
-        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+        # Fetch raw rows and validate BEFORE dict(): a missing diary or a
+        # project/diary mismatch must yield 404, not a TypeError from
+        # dict(None) leaking a 500 through the global exception handler.
+        diary_row = c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone()
+        project_row = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not diary_row or not project_row or diary_row["project_id"] != project_id:
+            raise HTTPException(status_code=404)
+        diary = dict(diary_row)
+        project = dict(project_row)
         labor = [dict(r) for r in c.execute(
             """SELECT lt.name, dl.count FROM diary_labor dl
                JOIN labor_types lt ON dl.labor_type_id=lt.id WHERE dl.diary_id=?""", (diary_id,))]
@@ -1319,7 +1732,18 @@ def diary_preview(request: Request, project_id: int, diary_id: int, user=Depends
 
 
 @app.get("/projects/{project_id}/diary/{diary_id}/pdf")
-def diary_pdf(request: Request, project_id: int, diary_id: int, user=Depends(require_user)):
+def diary_pdf(request: Request, project_id: int, diary_id: int, user: Annotated[dict, Depends(diary_access_dep)]):
+    # The dependency already gates assignment on the diary's owning project,
+    # but the path project_id must still match that project: otherwise a
+    # caller assigned to project A can read project B's metadata by pointing
+    # the URL at project B while keeping A's diary id.
+    _c0 = connect()
+    try:
+        _drow = _c0.execute("SELECT project_id FROM diaries WHERE id=?", (diary_id,)).fetchone()
+    finally:
+        _c0.close()
+    if not _drow or _drow["project_id"] != project_id:
+        raise HTTPException(status_code=404)
     from app.export_pdf import generate_diary_pdf
     path = generate_diary_pdf(project_id, diary_id)
     return FileResponse(path, media_type="application/pdf",

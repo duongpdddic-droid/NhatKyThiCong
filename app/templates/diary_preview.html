@@ -56,20 +56,40 @@
 
   {% if diary.issues %}
   <h3>6. Vướng mắc & Kiến nghị</h3>
-  <p><strong>Mức độ:</strong> {{ diary.issue_level }} | <strong>Vướng mắc:</strong> {{ diary.issues }}</p>
+  <p><strong>Mức độ:</strong> {{ diary.issue_level }} | <strong>Trạng thái:</strong> {{ diary.workflow_status }}</p>
+  <p><strong>Vướng mắc:</strong> {{ diary.issues }}</p>
+  {% if diary.cause %}<p><strong>Nguyên nhân:</strong> {{ diary.cause }}</p>{% endif %}
+  {% if diary.related_party %}<p><strong>Liên quan:</strong> {{ diary.related_party }}</p>{% endif %}
   <p><strong>Kiến nghị:</strong> {{ diary.issue_status }}</p>
+  {% if diary.resolved_at %}<p><strong>Ngày giải quyết:</strong> {{ diary.resolved_at }}</p>{% endif %}
   {% endif %}
 
   {% if photos %}
   <h3>7. Ảnh hiện trường</h3>
+  {% set issue_photos = photos | selectattr('photo_kind', 'equalto', 'issue') | list %}
+  {% set work_photos = photos | rejectattr('photo_kind', 'equalto', 'issue') | list %}
+  {% if issue_photos %}
+  <p style="font-size:12px;color:var(--muted);margin:4px 0;">📸 Ảnh liên quan issue:</p>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
-    {% for p in photos %}
+    {% for p in issue_photos %}
     <div>
       <img src="/uploads/{{ p.filename }}" style="width:100%;border-radius:8px;" onerror="this.style.opacity='.35';this.title='Ảnh không còn trên máy chủ';">
       <div style="font-size:11px;color:var(--muted);word-break:break-word;white-space:normal;">{{ p.caption or '' }}</div>
     </div>
     {% endfor %}
   </div>
+  {% endif %}
+  {% if work_photos %}
+  <p style="font-size:12px;color:var(--muted);margin:12px 0 4px;">📋 Ảnh công trình:</p>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+    {% for p in work_photos %}
+    <div>
+      <img src="/uploads/{{ p.filename }}" style="width:100%;border-radius:8px;" onerror="this.style.opacity='.35';this.title='Ảnh không còn trên máy chủ';">
+      <div style="font-size:11px;color:var(--muted);word-break:break-word;white-space:normal;">{{ p.caption or '' }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% endif %}
 
   <div style="margin-top:20px;display:flex;gap:8px;justify-content:center;">

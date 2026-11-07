@@ -42,8 +42,14 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
 
     c = connect()
     try:
-        diary = dict(c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone())
-        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+        # Validate raw rows BEFORE dict(): a missing diary/project must yield
+        # 404, not a TypeError from dict(None) leaking a 500 traceback.
+        diary_row = c.execute("SELECT * FROM diaries WHERE id=?", (diary_id,)).fetchone()
+        project_row = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not diary_row or not project_row or diary_row["project_id"] != project_id:
+            raise RuntimeError("PDF: diary/project mismatch or missing")
+        diary = dict(diary_row)
+        project = dict(project_row)
         labor = [dict(r) for r in c.execute(
             """SELECT lt.name, dl.count FROM diary_labor dl
                JOIN labor_types lt ON dl.labor_type_id=lt.id WHERE dl.diary_id=?""", (diary_id,))]
@@ -55,7 +61,8 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         tasks = [dict(r) for r in c.execute(
             "SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
         photos = [dict(r) for r in c.execute(
-                    "SELECT filename, caption FROM diary_photos WHERE diary_id=?", (diary_id,))]
+                    "SELECT filename, caption, photo_kind FROM diary_photos WHERE diary_id=?",
+                    (diary_id,))]
     finally:
         c.close()
 
@@ -156,25 +163,39 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         story.append(Paragraph("6. VƯỚNG MẮC & KIẾN NGHỊ", h2_style))
         level_map = {"low": "🟢 Nhẹ", "medium": "🟡 Trung bình", "high": "🔴 Nghiêm trọng"}
         story.append(Paragraph(f"Mức độ: {level_map.get(diary.get('issue_level', ''), '')}", normal))
+        story.append(Paragraph(f"Trạng thái: {diary.get('workflow_status', '')}", normal))
         story.append(Paragraph(f"Vướng mắc: {diary['issues']}", normal))
+        if diary.get("cause"):
+            story.append(Paragraph(f"Nguyên nhân: {diary['cause']}", normal))
+        if diary.get("related_party"):
+            story.append(Paragraph(f"Liên quan: {diary['related_party']}", normal))
         if diary.get("issue_status"):
             story.append(Paragraph(f"Kiến nghị/Trạng thái: {diary['issue_status']}", normal))
+        if diary.get("resolved_at"):
+            story.append(Paragraph(f"Ngày giải quyết: {diary['resolved_at']}", normal))
 
-    # Photos
+    # Photos — issue photos first, then work/site photos.
     if photos:
         story.append(Paragraph("7. ẢNH HIỆN TRƯỜNG", h2_style))
-        for p in photos:
-            data = p.get("_bytes")
-            if not data:
+        issue_photos = [p for p in photos if p.get("photo_kind") == "issue"]
+        work_photos = [p for p in photos if p.get("photo_kind") != "issue"]
+        for label, group in (("Ảnh liên quan issue", issue_photos),
+                             ("Ảnh công trình", work_photos)):
+            if not group:
                 continue
-            try:
-                img = Image(io.BytesIO(data), width=8*cm, height=6*cm)
-                story.append(img)
-                if p.get("caption"):
-                    story.append(Paragraph(p["caption"], normal))
-                story.append(Spacer(1, 0.2*cm))
-            except Exception:
-                pass
+            story.append(Paragraph(f"<i>{label}</i>", normal))
+            for p in group:
+                data = p.get("_bytes")
+                if not data:
+                    continue
+                try:
+                    img = Image(io.BytesIO(data), width=8*cm, height=6*cm)
+                    story.append(img)
+                    if p.get("caption"):
+                        story.append(Paragraph(p["caption"], normal))
+                    story.append(Spacer(1, 0.2*cm))
+                except Exception:
+                    pass
 
     # Signatures
     story.append(Spacer(1, 1*cm))

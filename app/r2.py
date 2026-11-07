@@ -12,6 +12,7 @@ mode; nothing here ever exposes a public bucket URL.
 """
 import io
 import os
+import threading
 from pathlib import Path
 
 DEFAULT_ENDPOINT = "https://ca9718a46c6c8d8e4ba340d8eb927591.r2.cloudflarestorage.com"
@@ -176,6 +177,232 @@ def delete_diary_objects(diary_id: int, filenames) -> list:
     for fn in filenames:
         if not fn:
             continue
-        delete_file(fn)
-        removed.append(fn)
+        # Only count filenames whose object was actually removed, so a
+        # failed deletion never frees quota that is still in use.
+        if delete_file(fn):
+            removed.append(fn)
     return removed
+
+
+DEFAULT_MAX_STORAGE_BYTES = int(os.getenv("R2_MAX_STORAGE_BYTES", "8000000000"))
+DEFAULT_MAX_UPLOAD_BYTES = int(os.getenv("R2_MAX_UPLOAD_BYTES", "5000000"))
+DEFAULT_MAX_PHOTOS_PER_DIARY = int(os.getenv("R2_MAX_PHOTOS_PER_DIARY", "20"))
+RAW_UPLOAD_CAP_BYTES = 50 * 1024 * 1024
+
+_quota_lock = threading.Lock()
+_quota = {
+    "cap": DEFAULT_MAX_STORAGE_BYTES,
+    "max_bytes": DEFAULT_MAX_UPLOAD_BYTES,
+    "max_photos": DEFAULT_MAX_PHOTOS_PER_DIARY,
+    "used": 0,
+}
+
+
+def _ensure_quota():
+    """Lazily (re)create the ledger after a test/fixture wiped it to None."""
+    global _quota
+    with _quota_lock:
+        if _quota is None:
+            _quota = {
+                "cap": DEFAULT_MAX_STORAGE_BYTES,
+                "max_bytes": DEFAULT_MAX_UPLOAD_BYTES,
+                "max_photos": DEFAULT_MAX_PHOTOS_PER_DIARY,
+                "used": 0,
+            }
+        return _quota
+
+
+def configure_quota(cap=None, max_bytes=None, max_photos=None):
+    q = _ensure_quota()
+    with _quota_lock:
+        if cap is not None:
+            q["cap"] = int(cap)
+        if max_bytes is not None:
+            q["max_bytes"] = int(max_bytes)
+        if max_photos is not None:
+            q["max_photos"] = int(max_photos)
+
+
+def set_used_bytes(n):
+    q = _ensure_quota()
+    with _quota_lock:
+        q["used"] = int(n)
+
+
+def get_used_bytes():
+    q = _ensure_quota()
+    with _quota_lock:
+        return int(q["used"])
+
+
+def quota_status():
+    q = _ensure_quota()
+    with _quota_lock:
+        return dict(q)
+
+
+def reserve(byte_count, photo_count=1):
+    byte_count = int(byte_count)
+    photo_count = int(photo_count)
+    if byte_count < 0:
+        byte_count = 0
+    if photo_count < 0:
+        photo_count = 0
+    q = _ensure_quota()
+    with _quota_lock:
+        if byte_count > q["max_bytes"]:
+            return False, "Ảnh quá giới hạn mỗi lần (%d > %d bytes)" % (
+                byte_count, q["max_bytes"])
+        if q["used"] + byte_count > q["cap"]:
+            return False, (
+                "Đã hết dung lượng lưu trữ (quota %d/%d bytes). "
+                "Vui lòng xóa ảnh cũ trước." % (q["used"], q["cap"]))
+        if photo_count > q["max_photos"]:
+            return False, (
+                "Số lượng ảnh vượt quá giới hạn mỗi nhật ký (%d > %d)" % (
+                    photo_count, q["max_photos"]))
+        q["used"] += byte_count
+        return True, ""
+
+
+def release(byte_count):
+    q = _ensure_quota()
+    with _quota_lock:
+        q["used"] = max(0, q["used"] - int(byte_count))
+# ── Image validation / normalization ───────────────────────────────────────────
+
+_ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "BMP"}
+_MAX_EDGE = 1600
+_JPEG_QUALITY = 82
+
+
+def _normalize_image(data: bytes):
+    """Return (normalized_bytes, error_str|None).
+
+    Validates the format, applies EXIF orientation, resizes so the longest
+    edge is at most ``_MAX_EDGE`` and re-encodes as JPEG at quality 82.
+    When R2 is *not* configured we cannot trust Pillow to be installed in
+    production, so we skip the format check and pass the bytes through
+    untouched (still enforcing the empty-content and raw-upload caps).
+    """
+    if not data:
+        return b"", "Ảnh rỗng"
+    if len(data) > RAW_UPLOAD_CAP_BYTES:
+        return b"", "Ảnh quá lớn để upload (%d bytes)" % len(data)
+    if not enabled():
+        return data, None
+    try:
+        from PIL import Image, ImageOps, UnidentifiedImageError
+    except Exception:
+        return data, None
+    try:
+        img = Image.open(io.BytesIO(data))
+        fmt = (img.format or "").upper()
+        if fmt not in _ALLOWED_FORMATS:
+            return b"", "Định dạng ảnh không được hỗ trợ: %s" % fmt
+        img = ImageOps.exif_transpose(img)
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) > _MAX_EDGE:
+            scale = _MAX_EDGE / float(max(w, h))
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))),
+                             Image.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
+        return out.getvalue(), None
+    except UnidentifiedImageError:
+        return b"", "Ảnh bị lỗi hoặc không phải định dạng hợp lệ"
+    except Exception as exc:
+        return b"", "Lỗi xử lý ảnh: %s" % exc
+
+
+def validate_image(data: bytes):
+    """Validate + normalize an uploaded photo.
+
+    Returns ``(bytes, None)`` on success or ``(b"", error_message)`` on
+    failure.  The returned bytes are what actually gets stored, so the quota
+    ledger accounts for the real on-disk size.
+    """
+    return _normalize_image(data)
+
+
+# ── Reconciliation ─────────────────────────────────────────────────────────────
+
+def _list_all_objects():
+    """Manual pagination over list_objects_v2 (no paginator dependency)."""
+    c = _cfg()
+    client = _client_instance()
+    contents = []
+    token = None
+    while True:
+        kwargs = {"Bucket": c["bucket"]}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = client.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents", []) or []:
+            contents.append(obj)
+        if resp.get("IsTruncated"):
+            token = resp.get("NextContinuationToken")
+            if not token:
+                break
+        else:
+            break
+    return contents
+
+
+def reconcile_from_inventory():
+    """Recompute the ledger from the real R2 inventory.
+
+    Returns ``(used_bytes, exact)``.  ``exact`` is False when any DB row has a
+    NULL ``size_bytes`` (legacy data) so the caller can warn the admin instead
+    of silently trusting the number.  Raises on listing failure so the admin
+    route stays fail-closed.
+
+    When an S3 client is reachable (real or mocked) the bucket inventory is the
+    source of truth; otherwise the ledger falls back to the sum of recorded
+    ``size_bytes`` in the DB, which is exact only when every row has one.
+    """
+    try:
+        client = _client_instance()
+    except Exception:
+        client = None
+    if client is not None:
+        objects = _list_all_objects()
+        total = sum(int(o.get("Size", 0)) for o in objects)
+        set_used_bytes(total)
+        exact = _db_rows_exact()
+        return total, exact
+    # No client configured: trust the DB ledger.
+    try:
+        import app.db as _db
+        c = _db.connect()
+        try:
+            row = c.execute(
+                "SELECT COALESCE(SUM(size_bytes), 0) AS s, "
+                "COUNT(*) FILTER (WHERE size_bytes IS NULL) AS nulls "
+                "FROM diary_photos").fetchone()
+            total = int(row["s"] or 0) if row else 0
+            exact = not (row and row["nulls"])
+        finally:
+            c.close()
+    except Exception:
+        return 0, False
+    set_used_bytes(total)
+    return total, exact
+
+
+def _db_rows_exact():
+    """True when every diary_photos row carries a non-null size_bytes."""
+    try:
+        import app.db as _db
+        c = _db.connect()
+        try:
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM diary_photos "
+                "WHERE size_bytes IS NULL").fetchone()
+            return not (row and row["n"])
+        finally:
+            c.close()
+    except Exception:
+        return False

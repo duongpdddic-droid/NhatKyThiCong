@@ -107,6 +107,8 @@
       <img id="photo-old-{{ p.id }}" src="/uploads/{{ p.filename }}" style="width:50px;height:50px;object-fit:cover;border-radius:6px;cursor:pointer;" onclick="enlargePhoto(this.src)" onerror="this.style.opacity='.35';this.title='Ảnh cũ không còn trên máy chủ; chọn ảnh mới để thay thế';">
       <input type="text" name="existing_photo_captions" value="{{ p.caption or '' }}" placeholder="Mô tả ảnh" style="flex:2;min-width:120px;">
       <input type="hidden" name="existing_photo_ids" value="{{ p.id }}">
+      <input type="checkbox" name="issue_photo_ids" value="{{ p.id }}" {% if p.photo_kind == 'issue' %}checked{% endif %} style="width:auto;">
+      <span style="font-size:11px;color:var(--muted);">Ảnh issue</span>
       <input type="file" name="existing_photo_replace_{{ p.id }}" id="er-{{ p.id }}" accept="image/*" capture="environment" style="display:none;">
       <input type="file" name="existing_photo_replace_{{ p.id }}" id="eg-{{ p.id }}" accept="image/*" style="display:none;">
       <button type="button" class="btn sm" id="erg-{{ p.id }}" title="Thay ảnh từ thư viện">📁</button>
@@ -116,8 +118,11 @@
     {% endfor %}
     {% endif %}
     <div id="photo-inputs"></div>
-    <div style="display:flex;gap:8px;margin-top:8px;">
-      <button type="button" class="btn sm" onclick="event.preventDefault(); addPhotoInput(); return false;">+ Them anh</button>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+      <button type="button" class="btn sm" onclick="event.preventDefault(); addPhotoInput(); return false;">+ Thêm ảnh</button>
+      <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="new-issue-photo" style="width:auto;"> Đánh dấu ảnh mới là ảnh issue
+      </label>
     </div>
   </div>
 
@@ -142,8 +147,28 @@
       <textarea name="issues" placeholder="Mô tả vấn đề gặp phải...">{{ diary.issues if diary else '' }}</textarea>
     </div>
     <div class="form-group">
+      <label>Nguyên nhân</label>
+      <textarea name="cause" placeholder="Nguyên nhân gây ra...">{{ diary.cause if diary else '' }}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Liên quan</label>
+      <input type="text" name="related_party" value="{{ diary.related_party if diary else '' }}" placeholder="Đơn vị/cá nhân liên quan">
+    </div>
+    <div class="form-group">
       <label>Kiến nghị / Giải pháp</label>
       <textarea name="issue_status" placeholder="Đề xuất giải pháp, yêu cầu hỗ trợ...">{{ diary.issue_status if diary else '' }}</textarea>
+    </div>
+    <div class="form-group">
+      <label>Trạng thái xử lý</label>
+      <select name="workflow_status">
+        <option value="pending" {% if not diary or diary.workflow_status == 'pending' %}selected{% endif %}>Chưa xử lý</option>
+        <option value="unresolved" {% if diary and diary.workflow_status == 'unresolved' %}selected{% endif %}>Chưa giải quyết</option>
+        <option value="resolved" {% if diary and diary.workflow_status == 'resolved' %}selected{% endif %}>Đã giải quyết</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Ngày giải quyết</label>
+      <input type="date" name="resolved_at" value="{{ diary.resolved_at if diary else '' }}">
     </div>
   </div>
 
@@ -344,5 +369,26 @@ function removeExistingPhoto(btn) {
 
 window.addEventListener('load', wireExistingPhotoButtons);
 window.addEventListener('load', calcWorkers);
+  // Submit: collect issue_photo_ids from existing rows + the new-photo toggle.
+  const _form = document.querySelector('form');
+  if (_form) {
+    _form.addEventListener('submit', function(e) {
+      const ids = [];
+      _form.querySelectorAll('input[name="issue_photo_ids"][type="checkbox"]').forEach(inp => {
+        if (inp.checked) ids.push(inp.value);
+      });
+      const toggle = document.getElementById('new-issue-photo');
+      if (toggle && toggle.checked) {
+        ids.push('1');
+      }
+      _form.querySelectorAll('input[name="issue_photo_ids"]').forEach(inp => inp.remove());
+      const fresh = document.createElement('input');
+      fresh.type = 'hidden';
+      fresh.name = 'issue_photo_ids';
+      fresh.value = ids.join(',');
+      _form.appendChild(fresh);
+    });
+  }
+
 </script>
 {% endblock %}

@@ -125,7 +125,10 @@ def sanitize_error(value, token=None):
     except Exception:
         pass
     for secret in secrets:
-        if secret:
+        # Real credentials are long tokens; a bare substring replace is safe
+        # for them.  Skip short secrets (a leaked test env var "s" or "k")
+        # because replacing a single letter would mangle ordinary words.
+        if secret and len(secret) >= 2:
             text = text.replace(secret, "[REDACTED]")
     text = " ".join(text.split())
     if len(text) > 240:
@@ -493,6 +496,10 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
     notes = _esc(_trunc(diary.get("notes", ""), 1000))
     issues = _esc(_trunc(diary.get("issues", ""), 1000))
     issue_status = _esc(_trunc(diary.get("issue_status", ""), 500))
+    cause = _esc(_trunc(diary.get("cause", ""), 300))
+    related_party = _esc(_trunc(diary.get("related_party", ""), 200))
+    workflow = _esc(diary.get("workflow_status", ""))
+    resolved_at = _esc(diary.get("resolved_at", ""))
     level = {"none": "", "low": "🟢", "medium": "🟡", "high": "🔴"}.get(
         diary.get("issue_level", "none"), "")
     level = _esc(level)
@@ -517,8 +524,16 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
         lines.append(f"\n📝 Ghi chú: {notes}")
     if issues and str(diary.get("issues", "")).strip():
         lines.append(f"\n⚠️ Vướng mắc {level}: {issues}")
+        if cause:
+            lines.append(f"🔍 Nguyên nhân: {cause}")
+        if related_party:
+            lines.append(f"👤 Liên quan: {related_party}")
         if issue_status:
             lines.append(f"Kiến nghị: {issue_status}")
+        if workflow:
+            lines.append(f"Trạng thái: {workflow}")
+        if resolved_at:
+            lines.append(f"Ngày giải quyết: {resolved_at}")
     lines.append(f"\n📸 Ảnh: {len(photos)} ảnh")
 
     msg = "\n".join(lines)
