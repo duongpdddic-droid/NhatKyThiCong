@@ -17,7 +17,7 @@
     <div class="form-row">
       <div class="form-group">
         <label>Buổi sáng — nhiệt độ (°C)</label>
-        <input type="number" step="0.1" name="weather_morning_temp" id="weather_morning_temp" value="{{ weather_morning.temp if weather_morning else (diary.weather_temp if diary else '') }}">
+        <input type="number" step="1" name="weather_morning_temp" id="weather_morning_temp" value="{{ weather_morning.temp if weather_morning else (diary.weather_temp if diary else '') }}">
       </div>
       <div class="form-group">
         <label>Buổi sáng — thời tiết</label>
@@ -27,7 +27,7 @@
     <div class="form-row">
       <div class="form-group">
         <label>Buổi chiều — nhiệt độ (°C)</label>
-        <input type="number" step="0.1" name="weather_afternoon_temp" id="weather_afternoon_temp" value="{{ weather_afternoon.temp if weather_afternoon else '' }}">
+        <input type="number" step="1" name="weather_afternoon_temp" id="weather_afternoon_temp" value="{{ weather_afternoon.temp if weather_afternoon else '' }}">
       </div>
       <div class="form-group">
         <label>Buổi chiều — thời tiết</label>
