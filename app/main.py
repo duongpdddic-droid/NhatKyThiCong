@@ -1287,6 +1287,26 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
 
 # ── Admin: Settings ───────────────────────────────────────────────────────────
 
+@app.post("/api/test-telegram")
+async def test_telegram_send(chat_id: str = Form("")):
+    """Test sending a Telegram message to a specific chat_id."""
+    from app.telegram_bot import send_message, get_bot_token, sanitize_error
+    
+    token = get_bot_token()
+    if not token:
+        return {"ok": False, "error": "Chưa cấu hình Bot Token"}
+    
+    if not chat_id or not chat_id.strip():
+        return {"ok": False, "error": "Chưa nhập Chat ID"}
+    
+    try:
+        # Try to send a test message
+        await send_message(token, chat_id.strip(), "🧪 Test từ Nhật ký thi công - Cấu hình Telegram hoạt động!")
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": sanitize_error(e)}
+
+
 @app.get("/api/test-telegram")
 async def test_telegram():
     import httpx
