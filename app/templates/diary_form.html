@@ -354,13 +354,17 @@ function loadWeather() {
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const r = await fetch(`/api/weather?lat=${pos.coords.latitude}&lon=${pos.coords.longitude}&date=${diaryDate}`);
       const d = await r.json();
-       if (d.temp) document.getElementById('weather_morning_temp').value = d.temp.toFixed(1);
+       if (d.temp) document.getElementById('weather_morning_temp').value = Math.round(d.temp);
        document.getElementById('weather_morning_desc').value = d.desc;
+       document.getElementById('weather_afternoon_temp').value = Math.round(d.temp);
+       document.getElementById('weather_afternoon_desc').value = d.desc;
     });
   } else {
     fetch(`/api/weather?date=${diaryDate}`).then(r=>r.json()).then(d => {
-       if (d.temp) document.getElementById('weather_morning_temp').value = d.temp.toFixed(1);
+       if (d.temp) document.getElementById('weather_morning_temp').value = Math.round(d.temp);
        document.getElementById('weather_morning_desc').value = d.desc;
+       document.getElementById('weather_afternoon_temp').value = Math.round(d.temp);
+       document.getElementById('weather_afternoon_desc').value = d.desc;
     });
   }
 }
