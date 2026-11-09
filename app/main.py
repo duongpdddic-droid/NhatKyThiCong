@@ -1830,7 +1830,42 @@ def add_recipient(request: Request, project_id: int, user=Depends(require_role("
                   name: str = Form(...), email: str = Form(""), phone: str = Form(""),
                   telegram_chat_id: str = Form(""), telegram_type: str = Form("account"),
                   role: str = Form(""), frequency: str = Form("daily")):
-    # Validate recipient type server-side; default to account.
+    # Handle batch submission (multiple rows via List[str])
+    from fastapi import Request as RequestType
+    if isinstance(name, list):
+        # Batch submission
+        from typing import List as ListType
+        names = name
+        roles = roles if isinstance(roles, list) else [roles]
+        telegram_types = telegram_types if isinstance(telegram_types, list) else [telegram_type]
+        telegram_chat_ids = telegram_chat_ids if isinstance(telegram_chat_ids, list) else [telegram_chat_id]
+        emails = emails if isinstance(emails, list) else [email]
+        phones = phones if isinstance(phones, list) else [phone]
+        frequencies = frequencies if isinstance(frequencies, list) else [frequency]
+        
+        c = connect()
+        try:
+            for i, n in enumerate(names):
+                n = n.strip()
+                if not n:
+                    continue
+                ttype = telegram_types[i].strip() if i < len(telegram_types) else "account"
+                if ttype not in ("account", "group"):
+                    ttype = "account"
+                tch = telegram_chat_ids[i].strip() if i < len(telegram_chat_ids) else ""
+                em = emails[i].strip() if i < len(emails) else ""
+                ph = phones[i].strip() if i < len(phones) else ""
+                rl = roles[i].strip() if i < len(roles) else ""
+                fr = frequencies[i].strip() if i < len(frequencies) else "daily"
+                c.execute("""INSERT INTO recipients (project_id, name, email, phone, telegram_chat_id, telegram_type, role, frequency)
+                             VALUES (?,?,?,?,?,?,?,?)""",
+                          (project_id, n, em, ph, tch, ttype, rl, fr))
+            c.commit()
+        finally:
+            c.close()
+        return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
+    
+    # Single recipient (original logic for backward compatibility with tests)
     if telegram_type not in ("account", "group"):
         telegram_type = "account"
     c = connect()

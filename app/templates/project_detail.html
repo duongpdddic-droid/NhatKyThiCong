@@ -81,44 +81,128 @@
 </div>
 
 <div class="section" style="margin-top:16px;">
+  <h3 style="margin-bottom:8px;">📋 Danh sách người nhận báo cáo</h3>
+
+  <!-- Current recipients (read-only display) -->
+  {% if recipients %}
+  <div style="margin-bottom:12px;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <tr>
+        <th style="text-align:left;padding:6px;border:1px solid var(--border);">Tên</th>
+        <th style="text-align:left;padding:6px;border:1px solid var(--border);">Vai trò</th>
+        <th style="text-align:left;padding:6px;border:1px solid var(--border);">Loại</th>
+        <th style="text-align:left;padding:6px;border:1px solid var(--border);">Chat ID</th>
+        <th style="text-align:left;padding:6px;border:1px solid var(--border);">Email</th>
+        <th style="text-align:left;padding:6px;border:1px solid var(--border);">Tần suất</th>
+        <th style="text-align:center;padding:6px;border:1px solid var(--border);">Thao tác</th>
+      </tr>
+      {% for r in recipients %}
+      <tr>
+        <td style="padding:6px;border:1px solid var(--border);">{{ r.name }}</td>
+        <td style="padding:6px;border:1px solid var(--border);">{{ r.role }}</td>
+        <td style="padding:6px;border:1px solid var(--border);">{{ '📱 Tài khoản' if r.telegram_type == 'account' else '👥 Nhóm' }}</td>
+        <td style="padding:6px;border:1px solid var(--border);">{{ r.telegram_chat_id }}</td>
+        <td style="padding:6px;border:1px solid var(--border);">{{ r.email }}</td>
+        <td style="padding:6px;border:1px solid var(--border);">{{ r.frequency }}</td>
+        <td style="text-align:center;padding:6px;border:1px solid var(--border);">
+          <form method="post" action="/projects/{{ project.id }}/recipients/{{ r.id }}/delete" style="display:inline;" onsubmit="return confirm('Xóa người nhận này?')">
+            <button type="submit" class="btn sm" style="color:var(--danger);background:transparent;border:none;">🗑️</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- Form to add new recipients (supports multiple rows) -->
   <form method="post" action="/projects/{{ project.id }}/recipients/add" id="recipient-form">
-    <div class="form-group"><input type="text" name="name" placeholder="Tên" required></div>
-    <div class="form-row">
-      <div class="form-group"><input type="text" name="role" placeholder="Vai trò (CDT, TVGS...)"></div>
-      <div class="form-group">
-        <select name="telegram_type" id="telegram_type">
-          <option value="account">Tài khoản cá nhân</option>
-          <option value="group">Nhóm/Group</option>
-        </select>
+    <div id="recipient-rows">
+      <div class="recipient-row" style="margin-bottom:10px;border:1px solid var(--border);border-radius:6px;padding:10px;background:#fafafa;">
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <div style="flex:2;">
+            <input type="text" name="name" placeholder="Tên người nhận" required style="width:100%;">
+          </div>
+          <div style="flex:1;">
+            <select name="role" placeholder="Vai trò" style="width:100%;">
+              <option value="">Vai trò (CDT, TVGS...)</option>
+              <option value="CDT">CDT</option>
+              <option value="TVGS">TVGS</option>
+              <option value="QA">QA</option>
+              <option value="PM">PM</option>
+              <option value="Admin">Admin</option>
+            </select>
+          </div>
+          <div style="flex:1;">
+            <select name="telegram_type" style="width:100%;">
+              <option value="account">📱 Tài khoản</option>
+              <option value="group">👥 Nhóm</option>
+            </select>
+          </div>
+          <div style="flex:2;">
+            <input type="text" name="telegram_chat_id" placeholder="Telegram Chat ID (VD: -1001234567890)" style="width:100%;">
+          </div>
+          <div style="flex:1;">
+            <input type="email" name="email" placeholder="Email" style="width:100%;">
+          </div>
+          <div style="flex:1;">
+            <select name="frequency" style="width:100%;">
+              <option value="daily">Hàng ngày</option>
+              <option value="weekly">Hàng tuần</option>
+              <option value="on_issue">Khi có sự cố</option>
+            </select>
+          </div>
+          <div style="flex:0 0 30px;">
+            <button type="button" class="btn sm" onclick="removeRecipientRow(this)" style="color:var(--danger);">✕</button>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="form-row">
-      <div class="form-group" style="flex:2;">
-        <input type="text" name="telegram_chat_id" id="telegram_chat_id" placeholder="Telegram Chat ID (VD: -1001234567890 cho nhóm, 123456789 cho tài khoản)" style="flex:1;">
-      </div>
+
+    <div style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;">
+      <div style="flex:1;">&nbsp;</div>
       <div style="flex:1;display:flex;gap:4px;align-items:flex-end;">
-        <button type="button" class="btn sm" onclick="openGetChatId()">📋 Lấy Chat ID</button>
-        <button type="button" class="btn sm" onclick="testChatId()">🧪 Test</button>
+        <button type="button" class="btn sm" onclick="addRecipientRow()">+ Thêm dòng nữa</button>
+        <button type="submit" class="btn sm primary">💾 Lưu tất cả</button>
       </div>
     </div>
-    <p style="font-size:12px;color:var(--muted);margin:4px 0;">
-      <strong>Cách lấy Chat ID:</strong>
-      <a href="https://t.me/userinfobot" target="_blank">userinfobot</a> (cho tài khoản) |
-      <a href="https://t.me/my_id_bot" target="_blank">my_id_bot</a> (cho nhóm: thêm bot vào nhóm → xem tin nhắn)
-      <br>Group ID là số âm (VD: -1001234567890), Tài khoản là số dương (VD: 123456789).
-    </p>
-    <div class="form-row">
-      <div class="form-group"><input type="email" name="email" placeholder="Email"></div>
-      <div class="form-group">
-        <select name="frequency">
-          <option value="daily">Hàng ngày</option>
-          <option value="weekly">Hàng tuần</option>
-          <option value="on_issue">Khi có sự cố</option>
-        </select>
-      </div>
-    </div>
-    <button type="submit" class="btn sm primary">➕ Thêm người nhận</button>
   </form>
+
+  <script>
+  function addRecipientRow() {
+    const rowsContainer = document.getElementById('recipient-rows');
+    const template = rowsContainer.querySelector('.recipient-row');
+    if (!template) return;
+    
+    const clone = template.cloneNode(true);
+    clone.querySelectorAll('input, select').forEach(el => el.value = '');
+    rowsContainer.appendChild(clone);
+  }
+
+  function removeRecipientRow(btn) {
+    const row = btn.closest('.recipient-row');
+    if (row.children.length <= 2) {
+      alert('Cần có ít nhất 1 dòng người nhận.');
+      return;
+    }
+    row.remove();
+  }
+
+  document.querySelectorAll('.recipient-row').forEach(row => {
+    row.querySelectorAll('input[name="telegram_chat_id"]').forEach(input => {
+      input.addEventListener('blur', function() {
+        const val = this.value.trim();
+        const rowContainer = this.closest('.recipient-row');
+        const typeSelect = rowContainer.querySelector('select[name="telegram_type"]');
+        if (val && val.startsWith('-')) {
+          typeSelect.value = 'group';
+        } else if (val && !isNaN(val)) {
+          typeSelect.value = 'account';
+        }
+      });
+    });
+  });
+  </script></form>
 
   <script>
   function openGetChatId() {
