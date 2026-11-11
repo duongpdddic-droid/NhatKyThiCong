@@ -204,7 +204,14 @@
   </div>
 
   <div class="section">
-    <h2>§8 Ghi chú</h2>
+    <h2>§8 Kế hoạch thi công ngày mai</h2>
+    <div class="form-group">
+      <textarea name="plan_tomorrow" placeholder="Nhập kế hoạch thi công cho ngày mai (công việc, nhân lực, máy móc, vật tư...)...">{{ diary.plan_tomorrow if diary else '' }}</textarea>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>§9 Ghi chú</h2>
     <div class="form-group">
       <textarea name="notes" placeholder="Ghi chú thêm...">{{ diary.notes if diary else '' }}</textarea>
     </div>

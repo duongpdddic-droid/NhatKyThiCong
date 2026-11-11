@@ -54,6 +54,11 @@
   <p>{{ diary.notes }}</p>
   {% endif %}
 
+  {% if diary.plan_tomorrow %}
+  <h3>6. Kế hoạch thi công ngày mai</h3>
+  <p>{{ diary.plan_tomorrow }}</p>
+  {% endif %}
+
   {% if issues %}
   <h3>6. Vướng mắc & Kiến nghị</h3>
   {% for issue in issues %}

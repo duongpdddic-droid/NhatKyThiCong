@@ -187,6 +187,11 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
         story.append(Paragraph("5. GHI CHÚ", h2_style))
         story.append(Paragraph(diary["notes"], normal))
 
+    # Plan tomorrow
+    if diary.get("plan_tomorrow"):
+        story.append(Paragraph("6. KẾ HOẠCH THI CÔNG NGÀY MAI", h2_style))
+        story.append(Paragraph(diary["plan_tomorrow"], normal))
+
     # Issues (one-to-many child table, legacy fallback synthesised above).
     level_map = {"low": "🟢 Nhẹ", "medium": "🟡 Trung bình", "high": "🔴 Nghiêm trọng"}
     if issues:

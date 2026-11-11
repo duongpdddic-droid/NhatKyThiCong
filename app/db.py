@@ -187,6 +187,16 @@ def _migrate_issue_columns(c):
                   "WHERE workflow_status IS NULL OR workflow_status=''")
 
 
+def _migrate_plan_tomorrow_column(c):
+    """Additive migration: plan_tomorrow on diaries (construction plan for next day)."""
+    if not IS_PG:
+        cols = _table_columns(c, "diaries")
+        if "plan_tomorrow" not in cols:
+            c.execute("ALTER TABLE diaries ADD COLUMN plan_tomorrow TEXT DEFAULT ''")
+    else:
+        c.execute("ALTER TABLE diaries ADD COLUMN IF NOT EXISTS plan_tomorrow TEXT DEFAULT ''")
+
+
 def _migrate_photo_kind_column(c):
     """Additive migration: photo_kind on diary_photos (work/site/issue)."""
     if not IS_PG:
@@ -550,6 +560,7 @@ def init_db():
         _migrate_weather(c)
         _migrate_issue_columns(c)
         _migrate_photo_kind_column(c)
+        _migrate_plan_tomorrow_column(c)
         _migrate_diary_issues_table(c)
         import hashlib
         # Only create admin if not exists (never overwrite password)

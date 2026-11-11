@@ -1110,6 +1110,7 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
     afternoon_desc = form.get("weather_afternoon_desc") or ""
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
+    plan_tomorrow = form.get("plan_tomorrow", "")
     issues = form.get("issues", "")
     issue_level = _norm_issue_level(form.get("issue_level", "none"))
     issue_status = form.get("issue_status", "")
@@ -1140,10 +1141,10 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
         if existing:
             diary_id = existing["id"]
             c.execute("""UPDATE diaries SET weather_temp=?, weather_desc=?, foreman=?,
-                         total_workers=?, notes=?, issues=?, issue_level=?, issue_status=?,
+                         total_workers=?, notes=?, plan_tomorrow=?, issues=?, issue_level=?, issue_status=?,
                          cause=?, related_party=?, workflow_status=?, resolved_at=?,
                          updated_at=datetime('now') WHERE id=?""",
-                      (morning_temp, morning_desc, foreman, total_workers, notes, issues,
+                      (morning_temp, morning_desc, foreman, total_workers, notes, plan_tomorrow, issues,
                        issue_level, issue_status, cause, related_party, workflow_status,
                        resolved_at, diary_id))
             # Clear old children
@@ -1151,14 +1152,14 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
                 c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
         else:
             cur = c.execute("""INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
-                             foreman, total_workers, notes, issues, issue_level, issue_status,
+                             foreman, total_workers, notes, plan_tomorrow, issues, issue_level, issue_status,
                              cause, related_party, workflow_status, resolved_at, created_by)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""" if __import__("app.db", fromlist=["IS_PG"]).IS_PG else """INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
-                             foreman, total_workers, notes, issues, issue_level, issue_status,
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""" if __import__("app.db", fromlist=["IS_PG"]).IS_PG else """INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
+                             foreman, total_workers, notes, plan_tomorrow, issues, issue_level, issue_status,
                              cause, related_party, workflow_status, resolved_at, created_by)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                              (project_id, diary_date, morning_temp, morning_desc, foreman,
-                             total_workers, notes, issues, issue_level, issue_status, cause,
+                             total_workers, notes, plan_tomorrow, issues, issue_level, issue_status, cause,
                              related_party, workflow_status, resolved_at, user["id"]))
             if __import__("app.db", fromlist=["IS_PG"]).IS_PG:
                 diary_id = cur.fetchone()["id"]
@@ -1998,6 +1999,7 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
     afternoon_desc = form.get("weather_afternoon_desc") or ""
     foreman = form.get("foreman", "")
     notes = form.get("notes", "")
+    plan_tomorrow = form.get("plan_tomorrow", "")
     issues = form.get("issues", "")
     issue_level = _norm_issue_level(form.get("issue_level", "none"))
     issue_status = form.get("issue_status", "")
@@ -2023,10 +2025,10 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         store_weather(c, project_id, diary_date, "morning", {"temp": morning_temp, "desc": morning_desc})
         store_weather(c, project_id, diary_date, "afternoon", {"temp": afternoon_temp, "desc": afternoon_desc})
         c.execute("""UPDATE diaries SET date=?, weather_temp=?, weather_desc=?, foreman=?,
-                     total_workers=?, notes=?, issues=?, issue_level=?, issue_status=?,
+                     total_workers=?, notes=?, plan_tomorrow=?, issues=?, issue_level=?, issue_status=?,
                      cause=?, related_party=?, workflow_status=?, resolved_at=?,
                      updated_at=datetime('now') WHERE id=?""",
-                   (diary_date, morning_temp, morning_desc, foreman, total_workers, notes,
+                   (diary_date, morning_temp, morning_desc, foreman, total_workers, notes, plan_tomorrow,
                    issues, issue_level, issue_status, cause, related_party, workflow_status,
                    resolved_at, diary_id))
         for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
