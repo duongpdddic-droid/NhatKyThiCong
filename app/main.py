@@ -1532,11 +1532,29 @@ def project_reminders_save(request: Request, project_id: int,
 @app.get("/api/weather")
 async def weather_proxy(lat: float = 21.0, lon: float = 105.8, date: str = None):
     import httpx
-    from datetime import date as d, datetime
-    # Only fetch weather if diary date is today (free API limitation)
+    from datetime import date as d
     target = date or d.today().isoformat()
+    
+    # First, check cached weather in database
+    c = connect()
+    try:
+        rows = c.execute(
+            "SELECT session, temp, description AS desc, icon FROM project_weather_log "
+            "WHERE project_id=(SELECT id FROM projects WHERE lat=? AND lon=? LIMIT 1) AND log_date=?",
+            (lat, lon, target)
+        ).fetchall()
+        if rows:
+            # Return morning session data (or first available)
+            morning = next((r for r in rows if r["session"] == "morning"), rows[0])
+            c.close()
+            return {"temp": morning["temp"], "desc": morning["desc"], "icon": morning["icon"]}
+    finally:
+        c.close()
+    
+    # Only fetch from API if today (free API limitation)
     if target != d.today().isoformat():
-        return {"temp": None, "desc": "Nhập thủ công (ngày khác hôm nay)", "icon": ""}
+        return {"temp": None, "desc": "Nhập thủ công (ngày khác hôm nay, chưa có cache)", "icon": ""}
+    
     api_key = os.getenv("OPENWEATHER_API_KEY", "")
     try:
         c = connect()
