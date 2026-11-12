@@ -284,6 +284,40 @@ def _migrate_diary_issues_table(c):
                   ("diary_issues_migrated", "1"))
 
 
+def _migrate_acceptance_table(c):
+    """Additive migration: diary_acceptance table for acceptance/inspection work."""
+    if not IS_PG:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS diary_acceptance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                diary_id INTEGER NOT NULL REFERENCES diaries(id) ON DELETE CASCADE,
+                item_name TEXT NOT NULL,
+                spec TEXT,
+                quantity REAL,
+                unit TEXT,
+                result TEXT DEFAULT 'passed',
+                note TEXT,
+                inspector TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+    else:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS diary_acceptance (
+                id SERIAL PRIMARY KEY,
+                diary_id INTEGER NOT NULL REFERENCES diaries(id) ON DELETE CASCADE,
+                item_name TEXT NOT NULL,
+                spec TEXT,
+                quantity REAL,
+                unit TEXT,
+                result TEXT DEFAULT 'passed',
+                note TEXT,
+                inspector TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+
 _connecting = False
 
 
@@ -487,6 +521,18 @@ def init_db():
             unit TEXT,
             cumulative_pct REAL
         );
+        CREATE TABLE IF NOT EXISTS diary_acceptance (
+            id SERIAL PRIMARY KEY,
+            diary_id INTEGER NOT NULL REFERENCES diaries(id) ON DELETE CASCADE,
+            item_name TEXT NOT NULL,
+            spec TEXT,
+            quantity REAL,
+            unit TEXT,
+            result TEXT DEFAULT 'passed',  -- passed, failed, conditional
+            note TEXT,
+            inspector TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
         CREATE TABLE IF NOT EXISTS recipients (
             id SERIAL PRIMARY KEY,
             project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
@@ -562,6 +608,7 @@ def init_db():
         _migrate_photo_kind_column(c)
         _migrate_plan_tomorrow_column(c)
         _migrate_diary_issues_table(c)
+        _migrate_acceptance_table(c)
         import hashlib
         # Only create admin if not exists (never overwrite password)
         existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()

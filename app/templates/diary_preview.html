@@ -49,13 +49,43 @@
   </table>
   {% endif %}
 
+  {% if acceptance %}
+  <h3>5. Công việc nghiệm thu trong ngày</h3>
+  <table style="width:100%;border-collapse:collapse;">
+    <tr style="background:#f1f5f9;">
+      <th style="padding:6px;">Hạng mục</th>
+      <th style="padding:6px;">Quy chuẩn/Thông số</th>
+      <th style="padding:6px;">SL</th>
+      <th style="padding:6px;">ĐVT</th>
+      <th style="padding:6px;">Kết quả</th>
+      <th style="padding:6px;">Người nghiệm thu</th>
+      <th style="padding:6px;">Ghi chú</th>
+    </tr>
+    {% for a in acceptance %}
+    <tr>
+      <td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ a.item_name }}</td>
+      <td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ a.spec }}</td>
+      <td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ a.quantity }}</td>
+      <td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ a.unit }}</td>
+      <td style="padding:6px;border-bottom:1px solid #e2e8f0;">
+        {% if a.result == 'passed' %}<span style="color:#16a34a;">✓ Đạt</span>
+        {% elif a.result == 'failed' %}<span style="color:#dc2626;">✗ Không đạt</span>
+        {% else %}<span style="color:#ca8a04;">⚠ Đạt có điều kiện</span>{% endif %}
+      </td>
+      <td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ a.inspector }}</td>
+      <td style="padding:6px;border-bottom:1px solid #e2e8f0;">{{ a.note }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
   {% if diary.notes %}
-  <h3>5. Ghi chú</h3>
+  <h3>6. Ghi chú</h3>
   <p>{{ diary.notes }}</p>
   {% endif %}
 
   {% if diary.plan_tomorrow %}
-  <h3>6. Kế hoạch thi công ngày mai</h3>
+  <h3>7. Kế hoạch thi công ngày mai</h3>
   <p>{{ diary.plan_tomorrow }}</p>
   {% endif %}
 

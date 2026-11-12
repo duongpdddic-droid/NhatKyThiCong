@@ -70,6 +70,8 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
             "SELECT * FROM diary_materials WHERE diary_id=?", (diary_id,))]
         tasks = [dict(r) for r in c.execute(
             "SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
+        acceptance = [dict(r) for r in c.execute(
+            "SELECT * FROM diary_acceptance WHERE diary_id=?", (diary_id,))]
         photos = [dict(r) for r in c.execute(
                     "SELECT filename, caption, photo_kind, issue_id FROM diary_photos WHERE diary_id=?",
                     (diary_id,))]
@@ -180,6 +182,17 @@ def generate_diary_pdf(project_id: int, diary_id: int) -> str:
             task_data.append([tsk["task_name"], str(tsk.get("quantity", "")), tsk.get("unit", ""), str(tsk.get("cumulative_pct", ""))])
         t = Table(task_data, colWidths=[8*cm, 3*cm, 3*cm, 3*cm])
         t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTNAME",(0,0),(-1,-1),font_name), ("FONTSIZE",(0,0),(-1,-1),9)]))
+        story.append(t)
+
+    # Acceptance (nghiệm thu)
+    if acceptance:
+        story.append(Paragraph("5. CÔNG VIỆC NGHIỆM THU TRONG NGÀY", h2_style))
+        acc_data = [["Hạng mục", "Quy chuẩn/Thông số", "SL", "ĐVT", "Kết quả", "Người nghiệm thu", "Ghi chú"]]
+        for a in acceptance:
+            result_text = "Đạt" if a.get("result") == "passed" else ("Không đạt" if a.get("result") == "failed" else "Đạt có điều kiện")
+            acc_data.append([a.get("item_name", ""), a.get("spec", ""), str(a.get("quantity", "")), a.get("unit", ""), result_text, a.get("inspector", ""), a.get("note", "")])
+        t = Table(acc_data, colWidths=[3*cm, 3*cm, 1.5*cm, 1.5*cm, 2*cm, 2.5*cm, 2.5*cm])
+        t.setStyle(TableStyle([("GRID", (0,0),(-1,-1),0.5,colors.grey), ("FONTNAME",(0,0),(-1,-1),font_name), ("FONTSIZE",(0,0),(-1,-1),8), ("BACKGROUND", (0,0),(-1,0), colors.lightgrey)]))
         story.append(t)
 
     # Notes

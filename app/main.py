@@ -1214,6 +1214,37 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
                            task_units[i] if i < len(task_units) else "",
                            float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
 
+        # Acceptance (nghiệm thu)
+        acc_item_names = form.getlist("acceptance_0_item_name")
+        # Check if we have acceptance data (multiple rows with indices)
+        # We need to parse by index
+        acc_indices = set()
+        for key in form.keys():
+            if key.startswith("acceptance_") and "_item_name" in key:
+                idx = key.split("_")[1]
+                if idx.isdigit():
+                    acc_indices.add(int(idx))
+        
+        for idx in sorted(acc_indices):
+            item_name = form.get(f"acceptance_{idx}_item_name", "")
+            if not item_name.strip():
+                continue
+            spec = form.get(f"acceptance_{idx}_spec", "")
+            quantity = form.get(f"acceptance_{idx}_quantity", "")
+            unit = form.get(f"acceptance_{idx}_unit", "")
+            result = form.get(f"acceptance_{idx}_result", "passed")
+            inspector = form.get(f"acceptance_{idx}_inspector", "")
+            note = form.get(f"acceptance_{idx}_note", "")
+            
+            try:
+                qty = float(quantity) if quantity and quantity.strip() else 0
+            except (ValueError, TypeError):
+                qty = 0
+            
+            c.execute("""INSERT INTO diary_acceptance (diary_id, item_name, spec, quantity, unit, result, note, inspector)
+                         VALUES (?,?,?,?,?,?,?,?)""",
+                      (diary_id, item_name, spec, qty, unit, result, note, inspector))
+
         # Photos with captions
         prior_ids = [r["id"] for r in c.execute(
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
@@ -2066,6 +2097,7 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                 c.execute("INSERT INTO diary_materials (diary_id, name, unit, quantity) VALUES (?,?,?,?)",
                           (diary_id, name, mat_units[i] if i < len(mat_units) else "",
                            float(mat_qtys[i]) if i < len(mat_qtys) and mat_qtys[i] and mat_qtys[i].strip() else 0))
+        # Tasks
         task_names = form.getlist("task_name")
         task_qtys = form.getlist("task_qty")
         task_units = form.getlist("task_unit")
@@ -2077,6 +2109,34 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                            float(task_qtys[i]) if i < len(task_qtys) and task_qtys[i] and task_qtys[i].strip() else 0,
                            task_units[i] if i < len(task_units) else "",
                            float(task_pcts[i]) if i < len(task_pcts) and task_pcts[i] and task_pcts[i].strip() else 0))
+
+        # Acceptance (nghiệm thu)
+        acc_indices = set()
+        for key in form.keys():
+            if key.startswith("acceptance_") and "_item_name" in key:
+                idx = key.split("_")[1]
+                if idx.isdigit():
+                    acc_indices.add(int(idx))
+        
+        for idx in sorted(acc_indices):
+            item_name = form.get(f"acceptance_{idx}_item_name", "")
+            if not item_name.strip():
+                continue
+            spec = form.get(f"acceptance_{idx}_spec", "")
+            quantity = form.get(f"acceptance_{idx}_quantity", "")
+            unit = form.get(f"acceptance_{idx}_unit", "")
+            result = form.get(f"acceptance_{idx}_result", "passed")
+            inspector = form.get(f"acceptance_{idx}_inspector", "")
+            note = form.get(f"acceptance_{idx}_note", "")
+            
+            try:
+                qty = float(quantity) if quantity and quantity.strip() else 0
+            except (ValueError, TypeError):
+                qty = 0
+            
+            c.execute("""INSERT INTO diary_acceptance (diary_id, item_name, spec, quantity, unit, result, note, inspector)
+                         VALUES (?,?,?,?,?,?,?,?)""",
+                      (diary_id, item_name, spec, qty, unit, result, note, inspector))
 
         prior_ids = [r["id"] for r in c.execute(
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
@@ -2156,6 +2216,7 @@ def diary_preview(request: Request, project_id: int, diary_id: int, user: Annota
                JOIN machinery_types mt ON dm.machinery_type_id=mt.id WHERE dm.diary_id=?""", (diary_id,))]
         materials = [dict(r) for r in c.execute("SELECT * FROM diary_materials WHERE diary_id=?", (diary_id,))]
         tasks = [dict(r) for r in c.execute("SELECT * FROM diary_tasks WHERE diary_id=?", (diary_id,))]
+        acceptance = [dict(r) for r in c.execute("SELECT * FROM diary_acceptance WHERE diary_id=?", (diary_id,))]
         photos = [dict(r) for r in c.execute("SELECT * FROM diary_photos WHERE diary_id=?", (diary_id,))]
         issues = _load_diary_issues(c, diary_id)
         if not issues:
@@ -2191,3 +2252,262 @@ def diary_pdf(request: Request, project_id: int, diary_id: int, user: Annotated[
     path = generate_diary_pdf(project_id, diary_id)
     return FileResponse(path, media_type="application/pdf",
                         filename=f"nhatky_{diary_id}.pdf")
+# ── Weekly Report ───────────────────────────────────────────────────────────
+
+from datetime import datetime, timedelta
+
+@app.get("/projects/{project_id}/weekly-report", response_class=HTMLResponse)
+def weekly_report_page(request: Request, project_id: int, user=Depends(require_role("admin")), week_start: str = None):
+    """Show weekly report page for a project."""
+    if not week_start:
+        today = datetime.now().strftime("%Y-%m-%d")
+        dt = datetime.strptime(today, "%Y-%m-%d")
+        week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+    
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    
+    c = connect()
+    try:
+        project_row = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project_row:
+            raise HTTPException(status_code=404)
+        project = dict(project_row)
+        
+        c.execute("SELECT * FROM diaries WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date",
+                  (project_id, week_start, week_end))
+        diaries = [dict(r) for r in c.fetchall()]
+        
+        if diaries:
+            diary_ids = [d["id"] for d in diaries]
+            placeholders = ",".join("?" for _ in diary_ids)
+            
+            # Labor
+            labor = c.execute(
+                f"""SELECT lt.name, SUM(dl.count) as total_count
+                    FROM diary_labor dl
+                    JOIN labor_types lt ON dl.labor_type_id = lt.id
+                    WHERE dl.diary_id IN ({placeholders})
+                    GROUP BY lt.name ORDER BY total_count DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            
+            # Machinery
+            machinery = c.execute(
+                f"""SELECT mt.name, SUM(dm.hours) as total_hours
+                    FROM diary_machinery dm
+                    JOIN machinery_types mt ON dm.machinery_type_id = mt.id
+                    WHERE dm.diary_id IN ({placeholders})
+                    GROUP BY mt.name ORDER BY total_hours DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            
+            # Tasks
+            tasks = c.execute(
+                f"""SELECT task_name, SUM(quantity) as total_qty, unit, MAX(cumulative_pct) as max_pct
+                    FROM diary_tasks
+                    WHERE diary_id IN ({placeholders})
+                    GROUP BY task_name, unit ORDER BY max_pct DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            
+            # Acceptance
+            acceptance = c.execute(
+                f"""SELECT result, COUNT(*) as count, GROUP_CONCAT(DISTINCT inspector) as inspectors
+                    FROM diary_acceptance
+                    WHERE diary_id IN ({placeholders})
+                    GROUP BY result ORDER BY count DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            
+            # Issues
+            issues = c.execute(
+                f"""SELECT i.description, i.level, i.workflow_status, i.resolved_at,
+                           d.date as diary_date
+                    FROM diary_issues i
+                    JOIN diaries d ON i.diary_id = d.id
+                    WHERE i.diary_id IN ({placeholders})
+                    AND i.workflow_status != 'resolved'
+                    ORDER BY d.date DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            
+            # Weather
+            week_end_dt = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+            weather = c.execute(
+                """SELECT session, AVG(temp) as avg_temp, GROUP_CONCAT(description) as descriptions
+                   FROM project_weather_log
+                   WHERE project_id = ? AND log_date BETWEEN ? AND ?
+                   GROUP BY session""",
+                (project_id, week_start, week_end_dt)
+            ).fetchall()
+        else:
+            labor = machinery = tasks = acceptance = issues = weather = []
+    finally:
+        c.close()
+    
+    return templates.TemplateResponse(request, "weekly_report.html", {
+        "user": user,
+        "project": project,
+        "diaries": diaries,
+        "week_start": week_start,
+        "week_end": week_end,
+        "labor": labor,
+        "machinery": machinery,
+        "tasks": tasks,
+        "acceptance": acceptance,
+        "issues": issues,
+        "weather": weather,
+    })
+
+
+@app.post("/projects/{project_id}/weekly-report/send")
+async def weekly_report_send(request: Request, project_id: int, user=Depends(require_role("admin")), week_start: str = Form(...)):
+    """Generate and send weekly report via Telegram."""
+    from app.telegram_bot import send_message, get_bot_token
+    
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    
+    c = connect()
+    try:
+        project_row = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project_row:
+            raise HTTPException(status_code=404)
+        project = dict(project_row)
+        
+        # Get recipients for this project
+        c.execute(
+            """SELECT telegram_chat_id FROM recipients WHERE project_id=? AND telegram_chat_id IS NOT NULL AND telegram_chat_id != '' AND frequency IN ('daily', 'weekly')""",
+            (project_id,)
+        )
+        chat_ids = {r["telegram_chat_id"] for r in c.fetchall() if r["telegram_chat_id"]}
+        
+        # Also get assigned users' telegram
+        c.execute(
+            """SELECT u.telegram_chat_id FROM users u
+               JOIN user_projects up ON u.id = up.user_id
+               WHERE up.project_id=? AND u.telegram_chat_id IS NOT NULL AND u.telegram_chat_id != ''""",
+            (project_id,)
+        )
+        for r in c.fetchall():
+            if r["telegram_chat_id"]:
+                chat_ids.add(r["telegram_chat_id"])
+    finally:
+        c.close()
+    
+    if not chat_ids:
+        return {"ok": False, "error": "Không có người nhận Telegram được cấu hình"}
+    
+    # Generate report text
+    report_lines = [
+        f"BÁO CÁO TUẦN - {project['name']}",
+        f"Tuần: {week_start} - {week_end}",
+        ""
+    ]
+    
+    # Generate report data
+    c = connect()
+    try:
+        c.execute("SELECT * FROM diaries WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date",
+                  (project_id, week_start, week_end))
+        diaries = [dict(r) for r in c.fetchall()]
+        
+        if diaries:
+            diary_ids = [d["id"] for d in diaries]
+            placeholders = ",".join("?" for _ in diary_ids)
+            
+            # Labor summary
+            labor = c.execute(
+                f"""SELECT lt.name, SUM(dl.count) as total_count
+                    FROM diary_labor dl
+                    JOIN labor_types lt ON dl.labor_type_id = lt.id
+                    WHERE dl.diary_id IN ({placeholders})
+                    GROUP BY lt.name ORDER BY total_count DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            if labor:
+                report_lines.append("NHÂN LỰC:")
+                for l in labor:
+                    report_lines.append(f"  - {l['name']}: {l['total_count']} người")
+                report_lines.append("")
+            
+            # Tasks
+            tasks = c.execute(
+                f"""SELECT task_name, SUM(quantity) as total_qty, unit
+                    FROM diary_tasks
+                    WHERE diary_id IN ({placeholders})
+                    GROUP BY task_name, unit ORDER BY total_qty DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            if tasks:
+                report_lines.append("CÔNG VIỆC HOÀN THÀNH:")
+                for t in tasks:
+                    report_lines.append(f"  - {t['task_name']}: {t['total_qty']} {t['unit']}")
+                report_lines.append("")
+            
+            # Acceptance
+            acceptance = c.execute(
+                f"""SELECT result, COUNT(*) as count
+                    FROM diary_acceptance
+                    WHERE diary_id IN ({placeholders})
+                    GROUP BY result ORDER BY count DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            if acceptance:
+                report_lines.append("NGHIỆM THU:")
+                for a in acceptance:
+                    result_text = "Đạt" if a['result'] == 'passed' else ("Không đạt" if a['result'] == 'failed' else "Đạt có điều kiện")
+                    report_lines.append(f"  - {result_text}: {a['count']} hạng mục")
+                report_lines.append("")
+            
+            # Issues
+            issues = c.execute(
+                f"""SELECT i.description, i.level, i.workflow_status, d.date
+                    FROM diary_issues i
+                    JOIN diaries d ON i.diary_id = d.id
+                    WHERE i.diary_id IN ({placeholders})
+                    AND i.workflow_status != 'resolved'
+                    ORDER BY d.date DESC""",
+                [d["id"] for d in diaries]
+            ).fetchall()
+            if issues:
+                report_lines.append("VẤN ĐỀ CẦN XỬ LÝ:")
+                for i in issues:
+                    level_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(i['level'], "")
+                    report_lines.append(f"  {level_emoji} [{i['date']}] {i['description'][:60]} ({i['workflow_status']})")
+                report_lines.append("")
+    finally:
+        c.close()
+    
+    report_text = "\n".join(report_lines)
+    
+    # Send to all recipients
+    token = get_bot_token()
+    if not token:
+        return {"ok": False, "error": "Chưa cấu hình Bot Token"}
+    
+    sent = 0
+    errors = []
+    for chat_id in chat_ids:
+        try:
+            from app.telegram_bot import send_message
+            await send_message(token, chat_id, report_text)
+            sent += 1
+        except Exception as e:
+            errors.append(f"{chat_id}: {e}")
+    
+    return {"ok": True, "sent": sent, "errors": errors, "message": f"Đã gửi báo cáo tuần cho {sent} người nhận"}
+
+
+@app.get("/projects/{project_id}/weekly-report/pdf")
+def weekly_report_pdf(request: Request, project_id: int, user=Depends(require_role("admin")), week_start: str = None):
+    """Generate weekly report PDF."""
+    if not week_start:
+        today = datetime.now().strftime("%Y-%m-%d")
+        dt = datetime.strptime(today, "%Y-%m-%d")
+        week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+    
+    week_end = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    
+    # For now, redirect to the HTML page with a print-to-PDF instruction
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"/projects/{project_id}/weekly-report?week_start={week_start}", status_code=302)

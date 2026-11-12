@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Báo cáo tuần - {{ project.name }}{% endblock %}
+{% block content %}
+<div style="max-width:1000px;margin:0 auto;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <h2>BÁO CÁO TUẦN - {{ project.name }}</h2>
+    <div style="display:flex;gap:8px;">
+      <a href="/projects/{{ project.id }}" class="btn sm">← Quay lại dự án</a>
+      <form method="get" style="display:flex;gap:8px;align-items:center;">
+        <input type="date" name="week_start" value="{{ week_start }}" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;">
+        <button type="submit" class="btn sm primary">Xem tuần khác</button>
+      </form>
+    </div>
+  </div>
+  
+  <p style="color:var(--muted);margin-bottom:16px;">
+    <strong>Tuần:</strong> {{ week_start }} → {{ week_end }} | 
+    <strong>Dự án:</strong> {{ project.address }} | 
+    <strong>CDT:</strong> {{ project.investor }} | 
+    <strong>TVGS:</strong> {{ project.supervisor }}
+  </p>
+  
+  {% if diaries %}
+  <p style="color:var(--muted);font-size:13px;margin-bottom:16px;">
+    Có {{ diaries|length }} nhật ký trong tuần này
+  </p>
+  {% else %}
+  <div class="alert" style="background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:16px;border-radius:8px;text-align:center;">
+    Chưa có nhật ký nào trong tuần này
+  </div>
+  {% endif %}
+  
+  <!-- Labor Summary -->
+  {% if labor %}
+  <div class="section">
+    <h3 style="margin-bottom:12px;">👷 TỔNG HỢP NHÂN LỰC</h3>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="text-align:left;padding:8px;">Loại thợ</th>
+          <th style="text-align:right;padding:8px;">Tổng cộng (người)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in labor %}
+        <tr>
+          <td style="padding:8px;">{{ l.name }}</td>
+          <td style="padding:8px;text-align:right;font-weight:600;">{{ l.total_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  
+  <!-- Machinery Summary -->
+  {% if machinery %}
+  <div class="section">
+    <h3 style="margin-bottom:12px;">🚜 TỔNG HỢP MÁY MÓC</h3>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="text-align:left;padding:8px;">Máy móc</th>
+          <th style="text-align:right;padding:8px;">Tổng giờ/SL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in machinery %}
+        <tr>
+          <td style="padding:8px;">{{ m.name }}</td>
+          <td style="padding:8px;text-align:right;">{{ m.total_hours }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  
+  <!-- Tasks Summary -->
+  {% if tasks %}
+  <div class="section">
+    <h3 style="margin-bottom:12px;">📋 CÔNG VIỆC HOÀN THÀNH</h3>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="text-align:left;padding:8px;">Công việc</th>
+          <th style="text-align:right;padding:8px;">Tổng KL</th>
+          <th style="text-align:center;padding:8px;">ĐVT</th>
+          <th style="text-align:center;padding:8px;">% Lũy kế max</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tasks %}
+        <tr>
+          <td style="padding:8px;">{{ t.task_name }}</td>
+          <td style="padding:8px;text-align:right;">{{ t.total_qty }}</td>
+          <td style="padding:8px;text-align:center;">{{ t.unit }}</td>
+          <td style="padding:8px;text-align:center;">{{ t.max_pct }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  
+  <!-- Acceptance Summary -->
+  {% if acceptance %}
+  <div class="section">
+    <h3 style="margin-bottom:12px;">✅ TỔNG HỢP NGHIỆM THU</h3>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="text-align:left;padding:8px;">Kết quả</th>
+          <th style="text-align:center;padding:8px;">Số hạng mục</th>
+          <th style="text-align:left;padding:8px;">Người nghiệm thu</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in acceptance %}
+        <tr>
+          <td style="padding:8px;">
+            {% if a.result == 'passed' %}
+              <span style="color:#16a34a;font-weight:600;">✓ Đạt</span>
+            {% elif a.result == 'failed' %}
+              <span style="color:#dc2626;font-weight:600;">✗ Không đạt</span>
+            {% else %}
+              <span style="color:#ca8a04;font-weight:600;">⚠ Đạt có điều kiện</span>
+            {% endif %}
+          </td>
+          <td style="padding:8px;text-align:center;font-weight:600;">{{ a.count }}</td>
+          <td style="padding:8px;">{{ a.inspectors or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  
+  <!-- Issues Needing Resolution -->
+  {% if issues %}
+  <div class="section">
+    <h3 style="margin-bottom:12px;">⚠️ VẤN ĐỀ CẦN XỬ LÝ</h3>
+    {% for issue in issues %}
+    <div class="card" style="margin-bottom:12px;padding:12px;border-left:4px solid 
+      {% if issue.level == 'high' %}#dc2626
+      {% elif issue.level == 'medium' %}#ca8a04
+      {% elif issue.level == 'low' %}#16a34a
+      {% else %}var(--border){% endif %};">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+        <div style="flex:1;">
+          <strong>{{ issue.description }}</strong>
+        </div>
+        <div style="display:flex;gap:12px;font-size:12px;color:var(--muted);">
+          <span>{{ issue.diary_date }}</span>
+          <span>
+            {% if issue.level == 'high' %}🔴 Nghiêm trọng
+            {% elif issue.level == 'medium' %}🟡 Trung bình
+            {% elif issue.level == 'low' %}🟢 Nhẹ
+            {% else %}{{ issue.level }}{% endif %}
+          </span>
+          <span>{{ issue.workflow_status }}</span>
+        </div>
+      </div>
+      {% if issue.cause %}<p style="margin:4px 0;"><strong>Nguyên nhân:</strong> {{ issue.cause }}</p>{% endif %}
+      {% if issue.related_party %}<p style="margin:4px 0;"><strong>Liên quan:</strong> {{ issue.related_party }}</p>{% endif %}
+      {% if issue.suggestion %}<p style="margin:4px 0;"><strong>Kiến nghị:</strong> {{ issue.suggestion }}</p>{% endif %}
+      {% if issue.resolved_at %}<p style="margin:4px 0;"><strong>Ngày giải quyết:</strong> {{ issue.resolved_at }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  
+  <!-- Weather Summary -->
+  {% if weather %}
+  <div class="section">
+    <h3 style="margin-bottom:12px;">🌤️ THỜI TIẾT TRUNG BÌNH</h3>
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="text-align:left;padding:8px;">Buổi</th>
+          <th style="text-align:center;padding:8px;">Nhiệt độ TB (°C)</th>
+          <th style="text-align:left;padding:8px;">Mô tả</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for w in weather %}
+        <tr>
+          <td style="padding:8px;">{{ 'Sáng' if w.session == 'morning' else 'Chiều' }}</td>
+          <td style="padding:8px;text-align:center;">{{ "%.1f"|format(w.avg_temp) if w.avg_temp else '-' }}</td>
+          <td style="padding:8px;">{{ w.descriptions }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  
+  <!-- Actions -->
+  <div style="display:flex;gap:8px;justify-content:center;margin-top:24px;padding-top:16px;border-top:1px solid var(--border);">
+    <form method="post" action="/projects/{{ project.id }}/weekly-report/send">
+      <input type="hidden" name="week_start" value="{{ week_start }}">
+      <button type="submit" class="btn primary">📤 Gửi báo cáo qua Telegram</button>
+    </form>
+    <a href="/projects/{{ project.id }}/weekly-report/pdf?week_start={{ week_start }}" class="btn" target="_blank">📄 Xuất PDF</a>
+    <a href="/projects/{{ project.id }}" class="btn">← Quay lại dự án</a>
+  </div>
+</div>
+{% endblock %}
