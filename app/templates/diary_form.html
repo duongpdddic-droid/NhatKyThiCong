@@ -275,13 +275,16 @@
 const prevLabor = {{ prev_labor | tojson }};
 const prevMachinery = {{ prev_machinery | tojson }};
 
-// Render previous labor
-Object.entries(prevLabor).forEach(([id, count]) => {
-  if (count > 0) addLaborRow(id, count, true);
-});
-// Render previous machinery
-Object.entries(prevMachinery).forEach(([id, hours]) => {
-  if (hours > 0) addMachineryRow(id, hours, true);
+// Render previous labor/machinery after DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  // Render previous labor
+  Object.entries(prevLabor).forEach(([id, count]) => {
+    if (count > 0) addLaborRow(id, count, true);
+  });
+  // Render previous machinery
+  Object.entries(prevMachinery).forEach(([id, hours]) => {
+    if (hours > 0) addMachineryRow(id, hours, true);
+  });
 });
 
 function addLabor() {
