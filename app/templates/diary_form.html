@@ -275,17 +275,28 @@
 const prevLabor = {{ prev_labor | tojson }};
 const prevMachinery = {{ prev_machinery | tojson }};
 
-// Render previous labor/machinery after DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
+// Render previous labor/machinery
+function renderPreviousData() {
+  console.log('DEBUG: prevLabor =', prevLabor);
+  console.log('DEBUG: prevMachinery =', prevMachinery);
   // Render previous labor
   Object.entries(prevLabor).forEach(([id, count]) => {
+    console.log('DEBUG: Adding labor row:', id, count);
     if (count > 0) addLaborRow(id, count, true);
   });
   // Render previous machinery
   Object.entries(prevMachinery).forEach(([id, hours]) => {
+    console.log('DEBUG: Adding machinery row:', id, hours);
     if (hours > 0) addMachineryRow(id, hours, true);
   });
-});
+}
+
+// Run immediately if DOM is ready, otherwise wait for DOMContentLoaded
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', renderPreviousData);
+} else {
+  renderPreviousData();
+}
 
 function addLabor() {
   const sel = document.getElementById('labor-select');
