@@ -245,9 +245,10 @@ _next_date = {"d": 0}
 
 
 def _fresh_date():
-    """Return a unique diary date per test so UNIQUE constraints never clash."""
+    """Return a unique, valid diary date per test so UNIQUE constraints never clash."""
     _next_date["d"] += 1
-    return "2026-0%02d" % _next_date["d"]
+    from datetime import date, timedelta
+    return (date(2026, 1, 1) + timedelta(days=_next_date["d"])).isoformat()
 
 
 def _seed_diary(client, date=None):

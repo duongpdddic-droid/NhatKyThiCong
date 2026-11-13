@@ -277,7 +277,10 @@ def project_create(request: Request, user=Depends(require_role("admin")),
 def project_edit_page(request: Request, project_id: int, user=Depends(require_role("admin"))):
     c = connect()
     try:
-        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+        row = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        project = dict(row)
     finally:
         c.close()
     return templates.TemplateResponse(request, "project_form.html", {"user": user, "project": project})
@@ -325,7 +328,10 @@ def project_detail(request: Request, project_id: int, user: Annotated[dict, Depe
 async def diary_new(request: Request, project_id: int, user: Annotated[dict, Depends(project_write_dep)], date_str: str = None):
     c = connect()
     try:
-        project = dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+        project_row = c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project_row:
+            raise HTTPException(status_code=404)
+        project = dict(project_row)
         labor_types = [dict(r) for r in c.execute("SELECT * FROM labor_types WHERE COALESCE(is_active,1)=1 ORDER BY sort_order")]
         machinery_types = [dict(r) for r in c.execute("SELECT * FROM machinery_types WHERE COALESCE(is_active,1)=1 ORDER BY sort_order")]
         # Auto-fill from previous day
@@ -993,6 +999,57 @@ def _cleanup_replaced_files(deferred_old):
             r2.release(reserved)
 
 
+def _parse_id_list(values):
+    """Parse id values that may arrive as separate fields or one comma-joined string.
+
+    The diary form collapses its photo checkboxes into a single
+    ``"12,13"`` field, so callers cannot assume one id per value; anything that
+    is not a positive integer is ignored instead of raising a 500.
+    """
+    ids = set()
+    for raw in values or []:
+        for token in str(raw or "").replace(";", ",").split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                ids.add(int(token))
+            except (TypeError, ValueError):
+                continue
+    return ids
+
+
+def _valid_diary_date(value):
+    """Return the canonical ISO date string when valid, otherwise None."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _form_truthy(value):
+    return str(value or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def _issue_photo_flags(form):
+    """Return ``(existing_issue_photo_ids, new_photos_are_issue)``.
+
+    New uploads are marked as issue photos when the form sends the explicit
+    ``new_issue_photo`` flag, or when a legacy client sends the sentinel photo
+    id ``0`` (the old "this upload is an issue photo" convention). The sentinel
+    is never a real photo id, so it is dropped from the id list.
+    """
+    ids = _parse_id_list(form.getlist("issue_photo_ids"))
+    mark_new = _form_truthy(form.get("new_issue_photo"))
+    if 0 in ids:
+        mark_new = True
+        ids.discard(0)
+    return ids, mark_new
+
+
 def _is_upload(value):
     return value is not None and bool(getattr(value, "filename", ""))
 
@@ -1133,7 +1190,12 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
     except Exception as e:
         print("Form parse error:", e, traceback.format_exc())
         raise
-    diary_date = form.get("date")
+    diary_date = _valid_diary_date(form.get("date"))
+    if not diary_date:
+        return HTMLResponse(
+            "<h3>Ngày thi công không hợp lệ</h3>"
+            "<p>Chọn ngày theo định dạng YYYY-MM-DD rồi lưu lại.</p>",
+            status_code=400)
     weather_temp = form.get("weather_temp")
     if weather_temp == "":
         weather_temp = None
@@ -1186,8 +1248,10 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
                       (morning_temp, morning_desc, foreman, total_workers, notes, plan_tomorrow, issues,
                        issue_level, issue_status, cause, related_party, workflow_status,
                        resolved_at, diary_id))
-            # Clear old children
-            for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
+            # Clear old children (acceptance included: the form re-submits the
+            # full list, so leaving the old rows would duplicate them).
+            for tbl in ["diary_labor", "diary_machinery", "diary_materials",
+                        "diary_tasks", "diary_acceptance"]:
                 c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
         else:
             cur = c.execute("""INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
@@ -1207,22 +1271,17 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
 
         # Labor (dropdown approach)
         labor_ids_str = form.get("labor_ids", "")
-        for lt_id_str in labor_ids_str.split(","):
-            lt_id_str = lt_id_str.strip()
-            if not lt_id_str:
-                continue
-            lt_id = int(lt_id_str)
-            count = int(form.get(f"labor_{lt_id}", 0) or 0)
+        for lt_id in _parse_id_list([labor_ids_str]):
+            try:
+                count = int(form.get(f"labor_{lt_id}", 0) or 0)
+            except (TypeError, ValueError):
+                count = 0
             if count > 0:
                 c.execute("INSERT INTO diary_labor (diary_id, labor_type_id, count) VALUES (?,?,?)",
                           (diary_id, lt_id, count))
         # Machinery (dropdown approach)
         machinery_ids_str = form.get("machinery_ids", "")
-        for mt_id_str in machinery_ids_str.split(","):
-            mt_id_str = mt_id_str.strip()
-            if not mt_id_str:
-                continue
-            mt_id = int(mt_id_str)
+        for mt_id in _parse_id_list([machinery_ids_str]):
             qty_str = form.get(f"machinery_{mt_id}", "0")
             try:
                 qty = int(qty_str) if qty_str and qty_str.strip() else 0
@@ -1289,14 +1348,14 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         from datetime import datetime as _dt
         stamp = _dt.now().strftime("%d/%m/%Y %H:%M")
-        issue_photo_ids = {int(x) for x in form.getlist("issue_photo_ids") if x}
+        issue_photo_ids, new_photos_are_issue = _issue_photo_flags(form)
         photo_errors = []
         for f, caption in _extract_new_photos(form):
             fname, reserved = await _persist_photo(f, diary_id, stamp)
             if not fname:
                 photo_errors.append(reserved or "Lỗi upload ảnh")
                 continue
-            kind = "issue" if len(issue_photo_ids) == 1 else "work"
+            kind = "issue" if new_photos_are_issue else "work"
             c.execute("INSERT INTO diary_photos (diary_id, filename, caption, size_bytes, photo_kind) VALUES (?,?,?,?,?)",
                       (diary_id, fname, caption if caption is not None else "", reserved, kind))
         if photo_errors:
@@ -1359,27 +1418,31 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
 # ── Admin: Settings ───────────────────────────────────────────────────────────
 
 @app.post("/api/test-telegram")
-async def test_telegram_send(chat_id: str = Form("")):
-    """Test sending a Telegram message to a specific chat_id."""
+async def test_telegram_send(chat_id: str = Form(""), user=Depends(require_role("admin"))):
+    """Admin-only: send a Telegram test message to a specific chat_id."""
     from app.telegram_bot import send_message, get_bot_token, sanitize_error
-    
+
     token = get_bot_token()
     if not token:
         return {"ok": False, "error": "Chưa cấu hình Bot Token"}
-    
+
     if not chat_id or not chat_id.strip():
         return {"ok": False, "error": "Chưa nhập Chat ID"}
-    
+
     try:
-        # Try to send a test message
-        await send_message(token, chat_id.strip(), "🧪 Test từ Nhật ký thi công - Cấu hình Telegram hoạt động!")
-        return {"ok": True}
+        result = await send_message(
+            chat_id.strip(), "🧪 Test từ Nhật ký thi công - Cấu hình Telegram hoạt động!")
     except Exception as e:
         return {"ok": False, "error": sanitize_error(e)}
+    if isinstance(result, dict) and result.get("ok"):
+        return {"ok": True}
+    error = result.get("error") if isinstance(result, dict) else None
+    return {"ok": False, "error": error or "Gửi tin nhắn test thất bại"}
 
 
 @app.get("/api/test-telegram")
-async def test_telegram():
+async def test_telegram(user=Depends(require_role("admin"))):
+    """Admin-only: verify the configured bot token via getMe."""
     import httpx
     # Read token from settings
     c = connect()
@@ -1513,6 +1576,9 @@ def admin_reminders_save(request: Request, project_id: int,
     c = connect()
     try:
         enabled = 1 if reminder_enabled in ("1", "on", "true", "True") else 0
+        project_row = c.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project_row:
+            raise HTTPException(status_code=404)
         c.execute(
             "INSERT INTO project_reminders (project_id, enabled, time) VALUES (?,?,?) "
             "ON CONFLICT(project_id) DO UPDATE SET enabled=excluded.enabled, "
@@ -1554,6 +1620,9 @@ def project_reminders_save(request: Request, project_id: int,
     c = connect()
     try:
         enabled = 1 if reminder_enabled in ("1", "on", "true", "True") else 0
+        project_row = c.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project_row:
+            raise HTTPException(status_code=404)
         c.execute(
             "INSERT INTO project_reminders (project_id, enabled, time) VALUES (?,?,?) "
             "ON CONFLICT(project_id) DO UPDATE SET enabled=excluded.enabled, "
@@ -1642,7 +1711,7 @@ async def weather_proxy(project_id: int = None, lat: float = None, lon: float = 
 # ── Admin: Users ─────────────────────────────────────────────────────────────
 
 @app.get("/admin/users", response_class=HTMLResponse)
-def admin_users(request: Request, user=Depends(require_role("admin"))):
+def admin_users(request: Request, user=Depends(require_role("admin")), error: str = None):
     c = connect()
     try:
         users = [dict(r) for r in c.execute("SELECT * FROM users ORDER BY id")]
@@ -1651,7 +1720,14 @@ def admin_users(request: Request, user=Depends(require_role("admin"))):
         c.close()
     return templates.TemplateResponse(request, "admin_users.html", {
         "user": user, "users": users, "projects": projects,
+        "error": _ADMIN_USER_ERRORS.get(error, ""),
     })
+
+
+_ADMIN_USER_ERRORS = {
+    "duplicate-username": "Username đã tồn tại, chọn tên khác.",
+    "last-admin": "Không thể xoá admin cuối cùng của hệ thống.",
+}
 
 
 @app.post("/admin/users/create")
@@ -1660,8 +1736,17 @@ def admin_user_create(request: Request, user=Depends(require_role("admin")),
                      full_name: str = Form(...), role: str = Form("viewer"),
                      phone: str = Form(""), email: str = Form(""),
                      telegram_chat_id: str = Form("")):
+    username = username.strip()
     c = connect()
     try:
+        existing = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+        if existing:
+            users = [dict(r) for r in c.execute("SELECT * FROM users ORDER BY id")]
+            projects = [dict(r) for r in c.execute("SELECT * FROM projects ORDER BY name")]
+            return templates.TemplateResponse(request, "admin_users.html", {
+                "user": user, "users": users, "projects": projects,
+                "error": _ADMIN_USER_ERRORS["duplicate-username"],
+            }, status_code=400)
         c.execute("""INSERT INTO users (username, password_hash, full_name, role, phone, email, telegram_chat_id)
                      VALUES (?,?,?,?,?,?,?)""",
                   (username, hash_password(password), full_name, role, phone, email, telegram_chat_id))
@@ -1762,7 +1847,10 @@ def toggle_machinery(request: Request, item_id: int, user=Depends(require_role("
 def admin_user_projects(request: Request, user_id: int, user=Depends(require_role("admin"))):
     c = connect()
     try:
-        target = dict(c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+        target_row = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target_row:
+            raise HTTPException(status_code=404)
+        target = dict(target_row)
         projects = [dict(r) for r in c.execute("SELECT * FROM projects ORDER BY name")]
         assigned = {r["project_id"] for r in c.execute(
             "SELECT project_id FROM user_projects WHERE user_id=?", (user_id,))}
@@ -1917,6 +2005,16 @@ def admin_user_delete(request: Request, user_id: int, user=Depends(require_role(
         return RedirectResponse(url="/admin/users", status_code=302)
     c = connect()
     try:
+        target = c.execute("SELECT id, role FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            return RedirectResponse(url="/admin/users", status_code=302)
+        if target["role"] == "admin":
+            admins = c.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin'").fetchone()["n"]
+            if admins <= 1:
+                return RedirectResponse(url="/admin/users?error=last-admin", status_code=302)
+        # diaries.created_by has no ON DELETE action, so an author reference
+        # would raise a FOREIGN KEY error: detach it before removing the user.
+        c.execute("UPDATE diaries SET created_by=NULL WHERE created_by=?", (user_id,))
         c.execute("DELETE FROM users WHERE id=?", (user_id,))
         c.commit()
     finally:
@@ -1930,7 +2028,9 @@ def admin_user_delete(request: Request, user_id: int, user=Depends(require_role(
 def recipient_delete(request: Request, project_id: int, recipient_id: int, user=Depends(require_role("admin"))):
     c = connect()
     try:
-        c.execute("DELETE FROM recipients WHERE id=?", (recipient_id,))
+        # Scope the delete to the project in the URL so a mismatched id cannot
+        # remove another project's recipient.
+        c.execute("DELETE FROM recipients WHERE id=? AND project_id=?", (recipient_id, project_id))
         c.commit()
     finally:
         c.close()
@@ -1938,53 +2038,42 @@ def recipient_delete(request: Request, project_id: int, recipient_id: int, user=
 
 
 @app.post("/projects/{project_id}/recipients/add")
-def add_recipient(request: Request, project_id: int, user=Depends(require_role("admin")),
-                  name: str = Form(...), email: str = Form(""), phone: str = Form(""),
-                  telegram_chat_id: str = Form(""), telegram_type: str = Form("account"),
-                  role: str = Form(""), frequency: str = Form("daily")):
-    # Handle batch submission (multiple rows via List[str])
-    from fastapi import Request as RequestType
-    if isinstance(name, list):
-        # Batch submission
-        from typing import List as ListType
-        names = name
-        roles = roles if isinstance(roles, list) else [roles]
-        telegram_types = telegram_types if isinstance(telegram_types, list) else [telegram_type]
-        telegram_chat_ids = telegram_chat_ids if isinstance(telegram_chat_ids, list) else [telegram_chat_id]
-        emails = emails if isinstance(emails, list) else [email]
-        phones = phones if isinstance(phones, list) else [phone]
-        frequencies = frequencies if isinstance(frequencies, list) else [frequency]
-        
-        c = connect()
-        try:
-            for i, n in enumerate(names):
-                n = n.strip()
-                if not n:
-                    continue
-                ttype = telegram_types[i].strip() if i < len(telegram_types) else "account"
-                if ttype not in ("account", "group"):
-                    ttype = "account"
-                tch = telegram_chat_ids[i].strip() if i < len(telegram_chat_ids) else ""
-                em = emails[i].strip() if i < len(emails) else ""
-                ph = phones[i].strip() if i < len(phones) else ""
-                rl = roles[i].strip() if i < len(roles) else ""
-                fr = frequencies[i].strip() if i < len(frequencies) else "daily"
-                c.execute("""INSERT INTO recipients (project_id, name, email, phone, telegram_chat_id, telegram_type, role, frequency)
-                             VALUES (?,?,?,?,?,?,?,?)""",
-                          (project_id, n, em, ph, tch, ttype, rl, fr))
-            c.commit()
-        finally:
-            c.close()
-        return RedirectResponse(url=f"/projects/{project_id}", status_code=302)
-    
-    # Single recipient (original logic for backward compatibility with tests)
-    if telegram_type not in ("account", "group"):
-        telegram_type = "account"
+async def add_recipient(request: Request, project_id: int, user=Depends(require_role("admin"))):
+    """Add one or several recipients from the multi-row project form.
+
+    The template renders a row per recipient and clones it with JS, so several
+    ``name``/``telegram_chat_id`` values arrive in one submit; reading the form
+    directly keeps every row instead of binding only the last one.
+    """
+    form = await request.form()
+
+    def pick(field, index, default=""):
+        values = form.getlist(field)
+        if index < len(values):
+            value = values[index]
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return default
+
+    names = form.getlist("name")
     c = connect()
     try:
-        c.execute("""INSERT INTO recipients (project_id, name, email, phone, telegram_chat_id, telegram_type, role, frequency)
-                     VALUES (?,?,?,?,?,?,?,?)""",
-                  (project_id, name, email, phone, telegram_chat_id.strip(), telegram_type, role, frequency))
+        project_row = c.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
+        if not project_row:
+            raise HTTPException(status_code=404)
+        for i, raw_name in enumerate(names):
+            name = (raw_name or "").strip()
+            if not name:
+                continue
+            telegram_type = pick("telegram_type", i, "account") or "account"
+            if telegram_type not in ("account", "group"):
+                telegram_type = "account"
+            c.execute(
+                """INSERT INTO recipients (project_id, name, email, phone, telegram_chat_id, telegram_type, role, frequency)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (project_id, name, pick("email", i), pick("phone", i),
+                 pick("telegram_chat_id", i), telegram_type,
+                 pick("role", i), pick("frequency", i, "daily") or "daily"))
         c.commit()
     finally:
         c.close()
@@ -2094,7 +2183,12 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
         _c0.close()
     if not _drow or _drow["project_id"] != project_id:
         raise HTTPException(status_code=404)
-    diary_date = form.get("date", "")
+    diary_date = _valid_diary_date(form.get("date"))
+    if not diary_date:
+        return HTMLResponse(
+            "<h3>Ngày thi công không hợp lệ</h3>"
+            "<p>Chọn ngày theo định dạng YYYY-MM-DD rồi lưu lại.</p>",
+            status_code=400)
     weather_temp = form.get("weather_temp")
     if weather_temp == "":
         weather_temp = None
@@ -2133,6 +2227,16 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
 
     c = connect()
     try:
+        # A diary may only move to a free date: UNIQUE(project_id, date) would
+        # otherwise raise an IntegrityError and lose the whole edit.
+        clash = c.execute(
+            "SELECT id FROM diaries WHERE project_id=? AND date=? AND id<>?",
+            (project_id, diary_date, diary_id)).fetchone()
+        if clash:
+            return HTMLResponse(
+                "<h3>Ngày đã có nhật ký</h3>"
+                "<p>Dự án đã có nhật ký cho ngày này. Chọn ngày khác hoặc sửa nhật ký đó.</p>",
+                status_code=400)
         store_weather(c, project_id, diary_date, "morning", {"temp": morning_temp, "desc": morning_desc})
         store_weather(c, project_id, diary_date, "afternoon", {"temp": afternoon_temp, "desc": afternoon_desc})
         c.execute("""UPDATE diaries SET date=?, weather_temp=?, weather_desc=?, foreman=?,
@@ -2142,25 +2246,21 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
                    (diary_date, morning_temp, morning_desc, foreman, total_workers, notes, plan_tomorrow,
                    issues, issue_level, issue_status, cause, related_party, workflow_status,
                    resolved_at, diary_id))
-        for tbl in ["diary_labor", "diary_machinery", "diary_materials", "diary_tasks"]:
+        for tbl in ["diary_labor", "diary_machinery", "diary_materials",
+                    "diary_tasks", "diary_acceptance"]:
             c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
 
         labor_ids_str = form.get("labor_ids", "")
-        for lt_id_str in labor_ids_str.split(","):
-            lt_id_str = lt_id_str.strip()
-            if not lt_id_str:
-                continue
-            lt_id = int(lt_id_str)
-            count = int(form.get(f"labor_{lt_id}", 0) or 0)
+        for lt_id in _parse_id_list([labor_ids_str]):
+            try:
+                count = int(form.get(f"labor_{lt_id}", 0) or 0)
+            except (TypeError, ValueError):
+                count = 0
             if count > 0:
                 c.execute("INSERT INTO diary_labor (diary_id, labor_type_id, count) VALUES (?,?,?)",
                           (diary_id, lt_id, count))
         machinery_ids_str = form.get("machinery_ids", "")
-        for mt_id_str in machinery_ids_str.split(","):
-            mt_id_str = mt_id_str.strip()
-            if not mt_id_str:
-                continue
-            mt_id = int(mt_id_str)
+        for mt_id in _parse_id_list([machinery_ids_str]):
             qty_str = form.get(f"machinery_{mt_id}", "0")
             try:
                 qty = int(qty_str) if qty_str and qty_str.strip() else 0
@@ -2222,14 +2322,14 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             "SELECT id FROM diary_photos WHERE diary_id=?", (diary_id,)).fetchall()]
         from datetime import datetime as _dt2
         stamp = _dt2.now().strftime("%d/%m/%Y %H:%M")
-        issue_photo_ids = {int(x) for x in form.getlist("issue_photo_ids") if x}
+        issue_photo_ids, new_photos_are_issue = _issue_photo_flags(form)
         photo_errors = []
         for f, caption in _extract_new_photos(form):
             fname, reserved = await _persist_photo(f, diary_id, stamp)
             if not fname:
                 photo_errors.append(reserved or "Lỗi upload ảnh")
                 continue
-            kind = "issue" if len(issue_photo_ids) == 1 else "work"
+            kind = "issue" if new_photos_are_issue else "work"
             c.execute("INSERT INTO diary_photos (diary_id, filename, caption, size_bytes, photo_kind) VALUES (?,?,?,?,?)",
                       (diary_id, fname, caption if caption is not None else "", reserved, kind))
         if photo_errors:
@@ -2353,54 +2453,61 @@ def weekly_report_page(request: Request, project_id: int, user=Depends(require_r
             raise HTTPException(status_code=404)
         project = dict(project_row)
         
-        c.execute("SELECT * FROM diaries WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date",
-                  (project_id, week_start, week_end))
-        diaries = [dict(r) for r in c.fetchall()]
-        
+        diaries = [dict(r) for r in c.execute(
+            "SELECT * FROM diaries WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date",
+            (project_id, week_start, week_end)).fetchall()]
+
         if diaries:
             diary_ids = [d["id"] for d in diaries]
             placeholders = ",".join("?" for _ in diary_ids)
-            
+
             # Labor
-            labor = c.execute(
+            labor = [dict(r) for r in c.execute(
                 f"""SELECT lt.name, SUM(dl.count) as total_count
                     FROM diary_labor dl
                     JOIN labor_types lt ON dl.labor_type_id = lt.id
                     WHERE dl.diary_id IN ({placeholders})
                     GROUP BY lt.name ORDER BY total_count DESC""",
-                [d["id"] for d in diaries]
-            ).fetchall()
-            
+                diary_ids).fetchall()]
+
             # Machinery
-            machinery = c.execute(
+            machinery = [dict(r) for r in c.execute(
                 f"""SELECT mt.name, SUM(dm.hours) as total_hours
                     FROM diary_machinery dm
                     JOIN machinery_types mt ON dm.machinery_type_id = mt.id
                     WHERE dm.diary_id IN ({placeholders})
                     GROUP BY mt.name ORDER BY total_hours DESC""",
-                [d["id"] for d in diaries]
-            ).fetchall()
-            
+                diary_ids).fetchall()]
+
             # Tasks
-            tasks = c.execute(
+            tasks = [dict(r) for r in c.execute(
                 f"""SELECT task_name, SUM(quantity) as total_qty, unit, MAX(cumulative_pct) as max_pct
                     FROM diary_tasks
                     WHERE diary_id IN ({placeholders})
                     GROUP BY task_name, unit ORDER BY max_pct DESC""",
-                [d["id"] for d in diaries]
-            ).fetchall()
-            
-            # Acceptance
-            acceptance = c.execute(
-                f"""SELECT result, COUNT(*) as count, GROUP_CONCAT(DISTINCT inspector) as inspectors
-                    FROM diary_acceptance
-                    WHERE diary_id IN ({placeholders})
-                    GROUP BY result ORDER BY count DESC""",
-                [d["id"] for d in diaries]
-            ).fetchall()
-            
+                diary_ids).fetchall()]
+
+            # Acceptance: aggregated in Python because GROUP_CONCAT is
+            # SQLite-only and would break the PostgreSQL deployment.
+            acc_rows = [dict(r) for r in c.execute(
+                f"""SELECT result, inspector FROM diary_acceptance
+                    WHERE diary_id IN ({placeholders})""", diary_ids).fetchall()]
+            acc_by_result = {}
+            for row in acc_rows:
+                key = row.get("result") or "passed"
+                bucket = acc_by_result.setdefault(key, {"result": key, "count": 0, "inspectors": []})
+                bucket["count"] += 1
+                inspector = (row.get("inspector") or "").strip()
+                if inspector and inspector not in bucket["inspectors"]:
+                    bucket["inspectors"].append(inspector)
+            acceptance = [
+                {"result": b["result"], "count": b["count"],
+                 "inspectors": ", ".join(b["inspectors"])}
+                for b in sorted(acc_by_result.values(), key=lambda x: x["count"], reverse=True)
+            ]
+
             # Issues
-            issues = c.execute(
+            issues = [dict(r) for r in c.execute(
                 f"""SELECT i.description, i.level, i.workflow_status, i.resolved_at,
                            d.date as diary_date
                     FROM diary_issues i
@@ -2408,18 +2515,31 @@ def weekly_report_page(request: Request, project_id: int, user=Depends(require_r
                     WHERE i.diary_id IN ({placeholders})
                     AND i.workflow_status != 'resolved'
                     ORDER BY d.date DESC""",
-                [d["id"] for d in diaries]
-            ).fetchall()
-            
-            # Weather
-            week_end_dt = (datetime.strptime(week_start, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
-            weather = c.execute(
-                """SELECT session, AVG(temp) as avg_temp, GROUP_CONCAT(description) as descriptions
-                   FROM project_weather_log
-                   WHERE project_id = ? AND log_date BETWEEN ? AND ?
-                   GROUP BY session""",
-                (project_id, week_start, week_end_dt)
-            ).fetchall()
+                diary_ids).fetchall()]
+
+            # Weather: averaged in Python for the same portability reason.
+            weather_rows = [dict(r) for r in c.execute(
+                """SELECT session, temp, description FROM project_weather_log
+                   WHERE project_id = ? AND log_date BETWEEN ? AND ?""",
+                (project_id, week_start, week_end)).fetchall()]
+            weather_by_session = {}
+            for row in weather_rows:
+                key = row.get("session") or ""
+                bucket = weather_by_session.setdefault(
+                    key, {"session": key, "temps": [], "descriptions": []})
+                if row.get("temp") is not None:
+                    bucket["temps"].append(float(row["temp"]))
+                if row.get("description"):
+                    bucket["descriptions"].append(row["description"])
+            weather = []
+            for bucket in weather_by_session.values():
+                temps = bucket["temps"]
+                weather.append({
+                    "session": bucket["session"],
+                    "avg_temp": (sum(temps) / len(temps)) if temps else None,
+                    "descriptions": ", ".join(bucket["descriptions"]),
+                })
+            weather.sort(key=lambda w: 0 if w["session"] == "morning" else 1)
         else:
             labor = machinery = tasks = acceptance = issues = weather = []
     finally:
@@ -2455,20 +2575,20 @@ async def weekly_report_send(request: Request, project_id: int, user=Depends(req
         project = dict(project_row)
         
         # Get recipients for this project
-        c.execute(
+        recipients_rows = c.execute(
             """SELECT telegram_chat_id FROM recipients WHERE project_id=? AND telegram_chat_id IS NOT NULL AND telegram_chat_id != '' AND frequency IN ('daily', 'weekly')""",
             (project_id,)
-        )
-        chat_ids = {r["telegram_chat_id"] for r in c.fetchall() if r["telegram_chat_id"]}
-        
+        ).fetchall()
+        chat_ids = {r["telegram_chat_id"] for r in recipients_rows if r["telegram_chat_id"]}
+
         # Also get assigned users' telegram
-        c.execute(
+        user_rows = c.execute(
             """SELECT u.telegram_chat_id FROM users u
                JOIN user_projects up ON u.id = up.user_id
                WHERE up.project_id=? AND u.telegram_chat_id IS NOT NULL AND u.telegram_chat_id != ''""",
             (project_id,)
-        )
-        for r in c.fetchall():
+        ).fetchall()
+        for r in user_rows:
             if r["telegram_chat_id"]:
                 chat_ids.add(r["telegram_chat_id"])
     finally:
@@ -2487,9 +2607,9 @@ async def weekly_report_send(request: Request, project_id: int, user=Depends(req
     # Generate report data
     c = connect()
     try:
-        c.execute("SELECT * FROM diaries WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date",
-                  (project_id, week_start, week_end))
-        diaries = [dict(r) for r in c.fetchall()]
+        diaries = [dict(r) for r in c.execute(
+            "SELECT * FROM diaries WHERE project_id=? AND date BETWEEN ? AND ? ORDER BY date",
+            (project_id, week_start, week_end)).fetchall()]
         
         if diaries:
             diary_ids = [d["id"] for d in diaries]
@@ -2567,15 +2687,21 @@ async def weekly_report_send(request: Request, project_id: int, user=Depends(req
     
     sent = 0
     errors = []
-    for chat_id in chat_ids:
+    for chat_id in sorted(chat_ids):
         try:
             from app.telegram_bot import send_message
-            await send_message(token, chat_id, report_text)
-            sent += 1
+            result = await send_message(chat_id, report_text)
         except Exception as e:
             errors.append(f"{chat_id}: {e}")
-    
-    return {"ok": True, "sent": sent, "errors": errors, "message": f"Đã gửi báo cáo tuần cho {sent} người nhận"}
+            continue
+        if isinstance(result, dict) and result.get("ok"):
+            sent += 1
+        else:
+            error = result.get("error") if isinstance(result, dict) else None
+            errors.append(f"{chat_id}: {error or 'gửi thất bại'}")
+
+    return {"ok": sent > 0, "sent": sent, "errors": errors,
+            "message": f"Đã gửi báo cáo tuần cho {sent} người nhận"}
 
 
 @app.get("/projects/{project_id}/weekly-report/pdf")

@@ -12,7 +12,7 @@
     <h2>§1 Thông tin chung</h2>
     <div class="form-group">
       <label>Ngày thi công</label>
-      <input type="date" name="date_display" value="{{ target_date }}" onchange="this.form.date.value=this.value" disabled>
+      <input type="date" name="date_display" value="{{ target_date }}" onchange="this.form.date.value=this.value" required>
     </div>
     <div class="form-row">
       <div class="form-group">
@@ -585,16 +585,23 @@ window.addEventListener('load', calcWorkers);
       _form.querySelectorAll('input[name="issue_photo_ids"][type="checkbox"]').forEach(inp => {
         if (inp.checked) ids.push(inp.value);
       });
-      const toggle = document.getElementById('new-issue-photo');
-      if (toggle && toggle.checked) {
-        ids.push('1');
-      }
       _form.querySelectorAll('input[name="issue_photo_ids"]').forEach(inp => inp.remove());
       const fresh = document.createElement('input');
       fresh.type = 'hidden';
       fresh.name = 'issue_photo_ids';
       fresh.value = ids.join(',');
       _form.appendChild(fresh);
+      // The "new photos are issue photos" toggle is a separate flag: mixing it
+      // into the id list made the server try int('1') on a photo id that does
+      // not exist yet.
+      const toggle = document.getElementById('new-issue-photo');
+      if (toggle && toggle.checked) {
+        const flag = document.createElement('input');
+        flag.type = 'hidden';
+        flag.name = 'new_issue_photo';
+        flag.value = '1';
+        _form.appendChild(flag);
+      }
     });
   }
 
