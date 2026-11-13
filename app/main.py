@@ -6,6 +6,7 @@ import re
 import uuid
 from pathlib import Path
 from datetime import date, datetime, timedelta
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, Depends
 from typing import Annotated
@@ -22,6 +23,7 @@ sys.path.insert(0, str(BASE_DIR))
 from app.db import connect, init_db, IS_PG
 from app.auth import (
     hash_password, verify_password, create_access_token,
+    password_needs_rehash,
     get_current_user, require_user, require_role,
     project_access_dep, diary_access_dep,
     project_write_dep, diary_write_dep,
@@ -29,15 +31,37 @@ from app.auth import (
 from app import r2
 from app.weather import ensure_weather, store_weather
 
-app = FastAPI(title="Nhật ký thi công")
+# Debug mode - only enable stack traces in development
+DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    init_db()
+    import threading
+    threading.Thread(target=_reminder_loop, daemon=True).start()
+    yield
+    # Shutdown
+    if IS_PG:
+        from app.db import _pg_pool
+        if _pg_pool:
+            _pg_pool.closeall()
+
+
+app = FastAPI(title="Nhật ký thi công", lifespan=lifespan)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     import traceback
     print("GLOBAL ERROR:", exc)
-    print(traceback.format_exc())
+    if DEBUG:
+        print(traceback.format_exc())
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(f"<pre>{traceback.format_exc()}</pre>", status_code=500)
+    # Production: generic error page, no stack trace
     from fastapi.responses import HTMLResponse
-    return HTMLResponse(f"<pre>{traceback.format_exc()}</pre>", status_code=500)
+    return HTMLResponse("<h1>Internal Server Error</h1><p>An unexpected error occurred.</p>", status_code=500)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
@@ -63,13 +87,6 @@ def serve_upload(filename: str, user=Depends(require_user)):
     ext = _P(filename).suffix.lower()
     media = r2.CONTENT_TYPES.get(ext, "image/jpeg")
     return Response(content=data, media_type=media)
-
-
-@app.on_event("startup")
-def startup():
-    init_db()
-    import threading
-    threading.Thread(target=_reminder_loop, daemon=True).start()
 
 
 def _reminder_loop():
@@ -129,16 +146,29 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         c.close()
     if not row or not verify_password(password, row["password_hash"]):
         return templates.TemplateResponse(request, "login.html", {"error": "Sai tài khoản hoặc mật khẩu"})
+    # Transparent upgrade: the first release stored unsalted SHA-256 digests.
+    if password_needs_rehash(row["password_hash"]):
+        c = connect()
+        try:
+            c.execute("UPDATE users SET password_hash=? WHERE id=?",
+                      (hash_password(password), row["id"]))
+            c.commit()
+        finally:
+            c.close()
     token = create_access_token({"user_id": row["id"], "role": row["role"]})
     resp = RedirectResponse(url="/", status_code=302)
-    resp.set_cookie("access_token", token, httponly=True, max_age=60*60*24*7)
+    # Cookie hardening: Secure only when the browser really is on HTTPS, so a
+    # plain-HTTP development server (or a proxy that terminates TLS in front of
+    # the app without forwarding the scheme) does not break the login session.
+    secure_cookie = request.url.scheme == "https"
+    resp.set_cookie("access_token", token, httponly=True, secure=secure_cookie, samesite="lax", max_age=60*60*24*7)
     return resp
 
 
 @app.get("/logout")
-def logout():
+def logout(request: Request):
     resp = RedirectResponse(url="/login", status_code=302)
-    resp.delete_cookie("access_token")
+    resp.delete_cookie("access_token", secure=request.url.scheme == "https", samesite="lax")
     return resp
 
 

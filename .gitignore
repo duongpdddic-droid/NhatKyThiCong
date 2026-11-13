@@ -5,3 +5,7 @@ exports/
 uploads/
 .env
 .venv/
+
+# Local security audit artifacts: findings inventory for issues that are not all
+# patched yet. Keep it on the operator machine, do not publish it in the repo.
+AUDIT_REPORT*.json

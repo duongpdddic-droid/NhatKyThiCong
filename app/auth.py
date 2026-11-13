@@ -1,29 +1,78 @@
-"""Authentication — JWT + password hashing."""
+"""Authentication — JWT + password hashing (bcrypt, legacy SHA-256 upgrade)."""
 import hashlib
+import hmac
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from passlib.context import CryptContext
 
-SECRET_KEY = os.getenv("SECRET_KEY", "nhatky-thi-cong-secret-key-change-in-prod")
+# SECRET_KEY must be provided via environment variable — no hardcoded fallback.
+# Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY environment variable is required but not set")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
+# bcrypt only reads the first 72 bytes of a password: bcrypt>=4.1 raises instead
+# of truncating, so the cut is applied here to keep hashing and verification
+# identical on every backend build.
+BCRYPT_MAX_BYTES = 72
+
 security = HTTPBearer(auto_error=False)
+
+# bcrypt password hashing via passlib
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _prepare_password(password: str | bytes | None) -> bytes:
+    raw = password if isinstance(password, bytes) else (password or "").encode("utf-8")
+    return raw[:BCRYPT_MAX_BYTES]
 
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    return _pwd_context.hash(_prepare_password(password))
+
+
+def _legacy_sha256_digest(password: str | None) -> str:
+    return hashlib.sha256((password or "").encode("utf-8")).hexdigest()
+
+
+def _is_legacy_sha256(hashed: str | None) -> bool:
+    """True for the unsalted 64-hex SHA-256 digests written by the first release."""
+    if not hashed or len(hashed) != 64:
+        return False
+    return all(ch in "0123456789abcdef" for ch in hashed.lower())
+
+
+def password_needs_rehash(hashed: str | None) -> bool:
+    """True when a stored hash predates bcrypt and must be upgraded."""
+    return _is_legacy_sha256(hashed)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return hash_password(plain) == hashed
+    """Verify against a bcrypt hash or a legacy SHA-256 digest.
+
+    Legacy digests keep existing accounts (the seeded admin included) able to log
+    in after the bcrypt migration; ``login`` re-hashes them on success. Unknown
+    or corrupt formats must deny — never raise a 500.
+    """
+    if not hashed:
+        return False
+    if _is_legacy_sha256(hashed):
+        return hmac.compare_digest(_legacy_sha256_digest(plain), hashed.lower())
+    try:
+        return _pwd_context.verify(_prepare_password(plain), hashed)
+    except (ValueError, TypeError):
+        return False
 
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 

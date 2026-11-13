@@ -6,6 +6,22 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 DB_PATH = Path(os.getenv("DB_PATH", "nhatky.db"))
 IS_PG = bool(DATABASE_URL)
 
+# PostgreSQL connection pool (initialized lazily on first use)
+_pg_pool = None
+
+
+def _get_pg_pool():
+    """Get or create the PostgreSQL connection pool."""
+    global _pg_pool
+    if _pg_pool is None:
+        import psycopg2
+        from psycopg2.pool import ThreadedConnectionPool
+        # Pool size: 1-10 connections, adjustable via env var
+        min_conn = int(os.getenv("PG_POOL_MIN", "1"))
+        max_conn = int(os.getenv("PG_POOL_MAX", "10"))
+        _pg_pool = ThreadedConnectionPool(min_conn, max_conn, DATABASE_URL)
+    return _pg_pool
+
 
 def _adapt_sql(sql: str) -> str:
     if not IS_PG:
@@ -323,10 +339,10 @@ _connecting = False
 
 def connect():
     if IS_PG:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
+        pool = _get_pg_pool()
+        conn = pool.getconn()
         conn.autocommit = False
-        return _PgConnection(conn)
+        return _PgConnection(conn, pool)
     else:
         import sqlite3
         global _connecting
@@ -345,8 +361,9 @@ def connect():
 
 
 class _PgConnection:
-    def __init__(self, conn):
+    def __init__(self, conn, pool):
         self._conn = conn
+        self._pool = pool
 
     def execute(self, sql, params=()):
         sql = _adapt_sql(sql)
@@ -369,7 +386,26 @@ class _PgConnection:
         self._conn.commit()
 
     def close(self):
-        self._conn.close()
+        # Return the connection to the pool instead of closing the socket.
+        conn, pool = self._conn, self._pool
+        self._conn = None
+        self._pool = None
+        if conn is None or pool is None:
+            return
+        # Never hand a connection with an open (or aborted) transaction to the
+        # next request: roll back first, and drop the socket when it is broken.
+        try:
+            conn.rollback()
+        except Exception:
+            try:
+                pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            return
+        try:
+            pool.putconn(conn)
+        except Exception:
+            pass
 
 
 class _PgCursor:
@@ -609,11 +645,11 @@ def init_db():
         _migrate_plan_tomorrow_column(c)
         _migrate_diary_issues_table(c)
         _migrate_acceptance_table(c)
-        import hashlib
+        from app.auth import hash_password
         # Only create admin if not exists (never overwrite password)
         existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()
         if not existing:
-            pw = hashlib.sha256("admin123".encode()).hexdigest()
+            pw = hash_password("admin123")
             if IS_PG:
                 c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (%s,%s,%s,%s)",
                           ("admin", pw, "Quản trị viên", "admin"))

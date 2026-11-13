@@ -88,16 +88,24 @@ def _compress_photo(photo_bytes: bytes, max_bytes: int = TELEGRAM_PHOTO_TARGET_B
 def get_bot_token():
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     if not token:
+        c = None
         try:
             sys.path.insert(0, str(Path(__file__).parent.parent))
             from app.db import connect
             c = connect()
             row = c.execute("SELECT value FROM settings WHERE key='telegram_bot_token'").fetchone()
-            c.close()
             if row and row["value"]:
                 token = row["value"]
         except Exception:
             pass
+        finally:
+            # The connection must go back to the pool even when the query
+            # raises, otherwise every failure burns one pooled slot for good.
+            if c is not None:
+                try:
+                    c.close()
+                except Exception:
+                    pass
     return token
 
 
@@ -108,28 +116,46 @@ def sanitize_error(value, token=None):
     errors can be surfaced to the UI without leaking secrets.  The result is
     also truncated to keep redirect/query strings and alerts readable.
     """
+    import re
     text = "" if value is None else str(value)
+    
+    # Get the bot token if not provided
     if token is None:
         try:
             token = get_bot_token()
         except Exception:
             token = ""
-    secrets = [token]
+    
+    # Collect all potential secrets to redact
+    secrets = set()
+    if token:
+        secrets.add(token)
     try:
-        secrets.append(os.getenv("TELEGRAM_BOT_TOKEN", ""))
+        # Add all known secret environment variables
+        for key in ("TELEGRAM_BOT_TOKEN", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "SECRET_KEY", "DATABASE_URL", "OPENWEATHER_API_KEY"):
+            val = os.getenv(key, "")
+            if val and len(val) >= 5:
+                secrets.add(val)
     except Exception:
         pass
-    try:
-        secrets.append(os.getenv("R2_ACCESS_KEY_ID", ""))
-        secrets.append(os.getenv("R2_SECRET_ACCESS_KEY", ""))
-    except Exception:
-        pass
+    
+    # Also redact common secret patterns in the text itself
+    # Telegram bot token pattern: 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ (also catches shorter test tokens)
+    text = re.sub(r'\b\d{3,10}:[A-Za-z0-9_-]{8,35}\b', '[REDACTED]', text)
+    # AWS access key pattern: AKIA...
+    text = re.sub(r'\bAKIA[0-9A-Z]{16}\b', '[REDACTED]', text)
+    # AWS secret key pattern: 40 char base64-like
+    text = re.sub(r'\b[A-Za-z0-9/+=]{40}\b', '[REDACTED]', text)
+    # JWT token pattern: eyJ...
+    text = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[REDACTED]', text)
+    # Generic long base64-like strings (potential secrets)
+    text = re.sub(r'\b[A-Za-z0-9+/=]{32,}\b', '[REDACTED]', text)
+    
+    # Explicit secret replacement for collected secrets
     for secret in secrets:
-        # Real credentials are long tokens; a bare substring replace is safe
-        # for them.  Skip short secrets (a leaked test env var "s" or "k")
-        # because replacing a single letter would mangle ordinary words.
-        if secret and len(secret) >= 2:
+        if secret and len(secret) >= 5:
             text = text.replace(secret, "[REDACTED]")
+    
     text = " ".join(text.split())
     if len(text) > 240:
         text = text[:237] + "..."
@@ -205,15 +231,19 @@ async def send_message(chat_id: str, text: str):
 
 
 def _vn_now():
-    """Current time in Asia/Ho_Chi_Minh, used so reminders fire on VN wall-clock."""
-    from datetime import datetime
+    """Current time in Asia/Ho_Chi_Minh, used so reminders fire on VN wall-clock.
+
+    The result is always timezone-aware: when the platform has no tz database
+    (Windows without ``tzdata``, minimal containers) the fixed UTC+7 offset is
+    used instead of a naive datetime.
+    """
+    from datetime import datetime, timedelta, timezone
     try:
         from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
     except Exception:
-        # Fallback for very old runtimes without zoneinfo.
-        import datetime as _d
-        return _d.datetime.utcnow() + _d.timedelta(hours=7)
+        # Fallback for runtimes without zoneinfo/tzdata.
+        return datetime.now(timezone(timedelta(hours=7)))
 
 
 async def send_reminder(project_id: int, force: bool = False) -> dict:
