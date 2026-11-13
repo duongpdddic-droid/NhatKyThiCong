@@ -76,7 +76,7 @@ def test_caption_stays_with_image_when_first_row_empty(client):
         "date": "2026-02-01",
         "photo_captions": ["caption-row0", "caption-row1"],
     }
-    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     rows = _new_rows(did)
     assert len(rows) == 1
@@ -109,7 +109,7 @@ def test_camera_vs_gallery_selection_keeps_caption(client):
         "date": "2026-02-02",
         "photo_captions": ["cap-cam", "cap-gal"],
     }
-    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     rows = _new_rows(did)
     caps = sorted(r["caption"] for r in rows)
@@ -148,7 +148,7 @@ def test_legacy_photos_chunking(client):
         ("photos", ("", b"", "application/octet-stream")),
     ]
     data = {"date": "2026-02-03", "photo_captions": ["cap-cam", "cap-gal"]}
-    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     rows = _new_rows(did)
     assert len(rows) == 2

@@ -168,12 +168,18 @@ def test_resolve_sets_date_when_absent(client):
 
 
 def test_reopen_clears_date(client):
-    client.post("/projects/1/diary/save", data={
+    # Reopen the diary created by the previous test through the edit endpoint
+    # (creating a diary for an occupied date is refused now).
+    c = connect()
+    did = c.execute("SELECT id FROM diaries WHERE project_id=1 AND date='2026-03-02'").fetchone()["id"]
+    c.close()
+    r = client.post(f"/projects/1/diary/{did}/save", data={
         "date": "2026-03-02", "weather_temp": "28", "weather_desc": "Mưa",
         "foreman": "CHT", "total_workers": "0", "notes": "",
         "issues": "Vấn đề", "issue_level": "medium", "issue_status": "",
         "cause": "", "related_party": "", "workflow_status": "pending",
     }, follow_redirects=False)
+    assert r.status_code == 302
     c = connect()
     d = _row(c, "diaries", "project_id=1 AND date='2026-03-02'", ())
     c.close()

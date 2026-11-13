@@ -50,6 +50,9 @@ def client():
         yield tc
 
 
+DIARY_ID = {"id": None}
+
+
 @pytest.fixture(autouse=True)
 def fresh_photo(client):
     os.makedirs(str(UPLOAD_DIR), exist_ok=True)
@@ -62,6 +65,7 @@ def fresh_photo(client):
     c.commit()
     pid = c.execute("SELECT id FROM diary_photos WHERE filename=?", (name,)).fetchone()["id"]
     c.close()
+    DIARY_ID["id"] = did
     yield {"pid": pid, "diary_id": did, "name": name}
     c = connect()
     c.execute("DELETE FROM diary_photos WHERE diary_id=?", (did,))
@@ -94,7 +98,7 @@ def test_replace_existing_photo_keeps_record_and_removes_old(client, fresh_photo
     data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
             "existing_photo_mode": "1",
             "existing_photo_captions": ["Replaced caption"]}
-    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{DIARY_ID['id']}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     row = _row(pid)
     assert row is not None
@@ -110,7 +114,7 @@ def test_replace_preserves_caption_when_none_given(client, fresh_photo):
     data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
             "existing_photo_mode": "1",
             "existing_photo_captions": [""]}
-    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{DIARY_ID['id']}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     row = _row(pid)
     assert row["filename"] != "old_photo.png"
@@ -123,7 +127,7 @@ def test_delete_existing_photo_removes_record_and_file(client, fresh_photo):
     old_name = _row(pid)["filename"]
     assert (UPLOAD_DIR / old_name).exists()
     data = {"date": "2026-01-01", "existing_photo_ids": [], "existing_photo_captions": [], "existing_photo_mode": "1"}
-    r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{DIARY_ID['id']}/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     assert _row(pid) is None
     assert not (UPLOAD_DIR / old_name).exists()
@@ -135,7 +139,7 @@ def test_keep_existing_photo_updates_caption_only(client, fresh_photo):
     data = {"date": "2026-01-01", "existing_photo_ids": [str(pid)],
             "existing_photo_mode": "1",
             "existing_photo_captions": ["Updated caption"]}
-    r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{DIARY_ID['id']}/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     row = _row(pid)
     assert row["caption"] == "Updated caption"
@@ -183,7 +187,7 @@ def test_replace_two_photos_keeps_each_correct(client, fresh_photo):
             "existing_photo_mode": "1",
             "existing_photo_captions": ["One", "Two"],
         }
-        r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+        r = client.post(f"/projects/1/diary/{DIARY_ID['id']}/save", data=data, files=files, follow_redirects=False)
         assert r.status_code == 302
         r1, r2 = _row(pid), _row(pid2)
         assert r1 is not None and r2 is not None
@@ -214,7 +218,7 @@ def test_new_photos_survive_without_existing_photo_mode(client, fresh_photo):
     files = [("photos", ("new_a.png", b"new-a", "image/png")),
              ("photos", ("new_b.png", b"new-b", "image/png"))]
     data = {"date": "2026-01-01"}
-    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{DIARY_ID['id']}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     rows = [dict(x) for x in connect().execute(
         "SELECT * FROM diary_photos WHERE diary_id=?", (did,)).fetchall()]
@@ -265,7 +269,7 @@ def test_new_photo_filenames_are_unique(client, fresh_photo):
              ("photos", ("b.png", b"bbb", "image/png")),
              ("photos", ("c.png", b"ccc", "image/png"))]
     data = {"date": "2026-01-01"}
-    r = client.post("/projects/1/diary/save", data=data, files=files, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{DIARY_ID['id']}/save", data=data, files=files, follow_redirects=False)
     assert r.status_code == 302
     rows = [dict(x) for x in connect().execute(
         "SELECT filename FROM diary_photos WHERE diary_id=?", (did,)).fetchall()]

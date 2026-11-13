@@ -264,8 +264,10 @@ def _seed_diary(client, date=None):
     return did, d
 
 
-def _upload(client, data, files=None):
-    return client.post("/projects/1/diary/save", data=data, files=files or {},
+def _upload(client, diary_id, data, files=None):
+    """Upload through the EDIT endpoint: creating a diary for an occupied date is
+    refused now, and these tests always seed the diary first."""
+    return client.post(f"/projects/1/diary/{diary_id}/save", data=data, files=files or {},
                        follow_redirects=False)
 
 
@@ -276,7 +278,7 @@ def test_rejected_over_cap_leaves_no_db_row_or_object(client):
     before = connect().execute(
         "SELECT COUNT(*) AS n FROM diary_photos WHERE diary_id=?", (did,)
     ).fetchone()["n"]
-    r = _upload(client, {"date": "2026-01-01"},
+    r = _upload(client, did, {"date": "2026-01-01"},
                 files=[("photos", ("a.jpg", jpeg, "image/jpeg"))])
     assert r.status_code in (400, 413, 422, 302)
     after = connect().execute(
@@ -290,7 +292,7 @@ def test_rejected_over_per_upload_size(client):
     jpeg = _small_jpeg()
     _setup_r2_mock(used=0, max_bytes=1)
     did, d = _seed_diary(client)
-    r = _upload(client, {"date": d},
+    r = _upload(client, did, {"date": d},
                 files=[("photos", ("a.jpg", jpeg, "image/jpeg"))])
     assert r.status_code in (400, 413, 422)
     assert connect().execute(
@@ -301,7 +303,7 @@ def test_rejected_over_per_upload_size(client):
 def test_rejected_malformed_image(client):
     _setup_r2_mock(used=0)
     did, d = _seed_diary(client)
-    r = _upload(client, {"date": d},
+    r = _upload(client, did, {"date": d},
                 files=[("photos", ("bad.jpg", b"not-an-image", "image/jpeg"))])
     assert r.status_code in (400, 413, 422)
     assert connect().execute(
@@ -312,7 +314,7 @@ def test_rejected_malformed_image(client):
 def test_rejected_oversize_raw_upload(client):
     _setup_r2_mock(used=0, max_bytes=100)
     did, d = _seed_diary(client)
-    r = _upload(client, {"date": d},
+    r = _upload(client, did, {"date": d},
                 files=[("photos", ("big.jpg", b"x" * 500, "image/jpeg"))])
     assert r.status_code in (400, 413, 422)
     assert connect().execute(
@@ -331,7 +333,7 @@ def test_photo_count_limit_blocks(client):
               (did, "p2.jpg", "b"))
     c.commit()
     c.close()
-    r = _upload(client, {"date": d},
+    r = _upload(client, did, {"date": d},
                 files=[("photos", ("a.jpg", jpeg, "image/jpeg"))])
     assert r.status_code in (400, 413, 422)
     assert connect().execute(
@@ -342,7 +344,7 @@ def test_write_failure_releases_reservation_and_leaves_no_row(client):
     jpeg = _small_jpeg()
     fake, _ = _setup_r2_mock(used=0, put_exc=RuntimeError("boom"))
     did, d = _seed_diary(client)
-    r = _upload(client, {"date": d},
+    r = _upload(client, did, {"date": d},
                 files=[("photos", ("a.jpg", jpeg, "image/jpeg"))])
     assert r.status_code in (400, 500, 502, 503)
     assert connect().execute(

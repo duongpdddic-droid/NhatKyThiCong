@@ -186,16 +186,45 @@ def test_diary_edit_save_does_not_duplicate_acceptance(ctx):
     assert after == before == 2, f"acceptance rows duplicated: {before} -> {after}"
 
 
-def test_diary_upsert_save_does_not_duplicate_acceptance(ctx):
+def test_new_diary_form_warns_when_the_date_already_has_a_diary(ctx):
     did = ctx["diary_id"]
-    before = _count("SELECT COUNT(*) FROM diary_acceptance WHERE diary_id=?", (did,))
-    form = _diary_form(date=DIARY_DATE,
-                       acceptance_0_item_name="Thử áp lực", acceptance_0_result="passed",
-                       acceptance_0_inspector="KS-ALPHA")
-    r = ctx["admin"].post("/projects/1/diary/save", data=form, follow_redirects=False)
+    html = ctx["admin"].get(f"/projects/1/diary/new?date_str={DIARY_DATE}").text
+    assert "đã có nhật ký" in html.lower(), "missing duplicate-date warning"
+    assert f"/projects/1/diary/{did}/edit" in html, "missing link to the existing diary"
+    # The form still opens so the operator can pick another date.
+    assert f'value="{DIARY_DATE}"' in html
+
+
+def test_new_diary_form_has_no_warning_for_a_free_date(ctx):
+    html = ctx["admin"].get("/projects/1/diary/new").text
+    assert "đã có nhật ký" not in html.lower()
+
+
+def test_new_diary_save_refuses_to_overwrite_existing_date(ctx):
+    did = ctx["diary_id"]
+    before_acceptance = _count("SELECT COUNT(*) FROM diary_acceptance WHERE diary_id=?", (did,))
+    before_labor = _count("SELECT COUNT(*) FROM diary_labor WHERE diary_id=?", (did,))
+    r = ctx["admin"].post("/projects/1/diary/save",
+                          data=_diary_form(date=DIARY_DATE, foreman="GHI ĐÈ",
+                                           acceptance_0_item_name="Hạng mục đè"),
+                          follow_redirects=False)
+    assert r.status_code == 409, r.text[:300]
+    body = r.text.lower()
+    assert "đã có nhật ký" in body
+    assert f"/projects/1/diary/{did}/edit" in body
+    c = connect()
+    row = c.execute("SELECT foreman, total_workers FROM diaries WHERE id=?", (did,)).fetchone()
+    c.close()
+    assert row["foreman"] == "CHT", "existing diary was overwritten"
+    assert _count("SELECT COUNT(*) FROM diary_acceptance WHERE diary_id=?", (did,)) == before_acceptance
+    assert _count("SELECT COUNT(*) FROM diary_labor WHERE diary_id=?", (did,)) == before_labor
+
+
+def test_new_diary_save_creates_a_diary_on_a_free_date(ctx):
+    r = ctx["admin"].post("/projects/1/diary/save",
+                          data=_diary_form(date="2026-06-10"), follow_redirects=False)
     assert r.status_code == 302, r.text[:300]
-    after = _count("SELECT COUNT(*) FROM diary_acceptance WHERE diary_id=?", (did,))
-    assert after == 1, f"acceptance rows after upsert-save: {before} -> {after}"
+    assert _count("SELECT COUNT(*) FROM diaries WHERE date='2026-06-10'") == 1
 
 
 # ── L6: comma-joined issue photo ids ────────────────────────────────────────

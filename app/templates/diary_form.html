@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Nhật ký — {{ project.name }}{% endblock %}
 {% block content %}
+{% if date_conflict %}
+<div class="card" style="padding:12px;margin-bottom:12px;border-left:4px solid var(--danger);">
+  <strong>⚠️ Ngày {{ target_date }} đã có nhật ký.</strong>
+  Hệ thống không ghi đè — hãy chọn ngày khác ở ô "Ngày thi công", hoặc
+  <a href="/projects/{{ project.id }}/diary/{{ date_conflict }}/edit">mở nhật ký ngày đó để sửa</a>.
+</div>
+{% endif %}
 {% if diary_id %}
 <form method="post" action="/projects/{{ project.id }}/diary/{{ diary_id }}/save" enctype="multipart/form-data">
 {% else %}

@@ -94,7 +94,7 @@ def test_save_machinery_as_integer(client):
     finally:
         c.close()
     data = {"date": "2026-03-01", "machinery_ids": "1", "machinery_1": "3"}
-    r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     rows = _machinery_rows(did)
     assert len(rows) == 1
@@ -111,7 +111,7 @@ def test_save_machinery_float_rejected(client):
     finally:
         c.close()
     data = {"date": "2026-03-02", "machinery_ids": "1", "machinery_1": "2.5"}
-    r = client.post("/projects/1/diary/save", data=data, follow_redirects=False)
+    r = client.post(f"/projects/1/diary/{did}/save", data=data, follow_redirects=False)
     assert r.status_code == 302
     rows = _machinery_rows(did)
     assert rows == []
@@ -142,7 +142,7 @@ def test_preview_machinery_label(client):
     finally:
         c.close()
     data = {"date": "2026-03-04", "machinery_ids": "1", "machinery_1": "4"}
-    client.post("/projects/1/diary/save", data=data, follow_redirects=False)
+    client.post(f"/projects/1/diary/{did}/save", data=data, follow_redirects=False)
     r = client.get(f"/projects/1/diary/{did}/preview")
     assert r.status_code == 200
     assert "Số lượng" in r.text

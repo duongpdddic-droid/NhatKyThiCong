@@ -352,6 +352,10 @@ async def diary_new(request: Request, project_id: int, user: Annotated[dict, Dep
         prev = c.execute(
             "SELECT * FROM diaries WHERE project_id=? AND date < ? ORDER BY date DESC LIMIT 1",
             (project_id, target_date)).fetchone()
+        # Warn (and never overwrite) when the chosen date already has a diary.
+        conflict = c.execute(
+            "SELECT id FROM diaries WHERE project_id=? AND date=?", (project_id, target_date)).fetchone()
+        date_conflict = conflict["id"] if conflict else None
         prev_labor = {}
         prev_machinery = {}
         prev_materials = []
@@ -374,6 +378,7 @@ async def diary_new(request: Request, project_id: int, user: Annotated[dict, Dep
         "prev_labor": prev_labor, "prev_machinery": prev_machinery,
         "prev_materials": prev_materials, "prev_photos": prev_photos,
         "diary": None,
+        "date_conflict": date_conflict,
         "weather_default": weather_default,
         "weather_morning": weather_rows.get("morning", {}),
         "weather_afternoon": weather_rows.get("afternoon", {}),
@@ -1050,6 +1055,33 @@ def _issue_photo_flags(form):
     return ids, mark_new
 
 
+def _next_day_iso(iso_date: str) -> str:
+    try:
+        return (datetime.strptime(iso_date, "%Y-%m-%d") + timedelta(days=1)).date().isoformat()
+    except (TypeError, ValueError):
+        return date.today().isoformat()
+
+
+def _diary_date_conflict_response(project_id: int, diary_date: str, diary_id: int):
+    """409 page shown instead of overwriting a diary that already exists.
+
+    Offers the only two safe continuations: edit the saved diary, or create a
+    new one for another date.
+    """
+    next_date = _next_day_iso(diary_date)
+    return HTMLResponse(
+        "<h3>Ngày {d} đã có nhật ký</h3>"
+        "<p>Hệ thống <strong>không ghi đè</strong> nhật ký đã có. "
+        "Bố vui lòng chọn ngày khác hoặc mở nhật ký của ngày đó để sửa.</p>"
+        "<p><a class=\"btn sm primary\" href=\"/projects/{pid}/diary/{did}/edit\">"
+        "✏️ Mở nhật ký ngày {d} để sửa</a></p>"
+        "<p><a class=\"btn sm\" href=\"/projects/{pid}/diary/new?date_str={nxt}\">"
+        "🆕 Tạo nhật ký cho ngày {nxt}</a> "
+        "<a class=\"btn sm\" href=\"/projects/{pid}\">← Về dự án</a></p>".format(
+            d=diary_date, pid=project_id, did=diary_id, nxt=next_date),
+        status_code=409)
+
+
 def _is_upload(value):
     return value is not None and bool(getattr(value, "filename", ""))
 
@@ -1234,40 +1266,28 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
 
     c = connect()
     try:
-        store_weather(c, project_id, diary_date, "morning", {"temp": morning_temp, "desc": morning_desc})
-        store_weather(c, project_id, diary_date, "afternoon", {"temp": afternoon_temp, "desc": afternoon_desc})
-        # Upsert diary
+        # Never overwrite an existing diary: one diary per project+date. The
+        # operator is sent to the saved diary (or picks another date) instead.
         existing = c.execute(
             "SELECT id FROM diaries WHERE project_id=? AND date=?", (project_id, diary_date)).fetchone()
         if existing:
-            diary_id = existing["id"]
-            c.execute("""UPDATE diaries SET weather_temp=?, weather_desc=?, foreman=?,
-                         total_workers=?, notes=?, plan_tomorrow=?, issues=?, issue_level=?, issue_status=?,
-                         cause=?, related_party=?, workflow_status=?, resolved_at=?,
-                         updated_at=datetime('now') WHERE id=?""",
-                      (morning_temp, morning_desc, foreman, total_workers, notes, plan_tomorrow, issues,
-                       issue_level, issue_status, cause, related_party, workflow_status,
-                       resolved_at, diary_id))
-            # Clear old children (acceptance included: the form re-submits the
-            # full list, so leaving the old rows would duplicate them).
-            for tbl in ["diary_labor", "diary_machinery", "diary_materials",
-                        "diary_tasks", "diary_acceptance"]:
-                c.execute(f"DELETE FROM {tbl} WHERE diary_id=?", (diary_id,))
+            return _diary_date_conflict_response(project_id, diary_date, existing["id"])
+        store_weather(c, project_id, diary_date, "morning", {"temp": morning_temp, "desc": morning_desc})
+        store_weather(c, project_id, diary_date, "afternoon", {"temp": afternoon_temp, "desc": afternoon_desc})
+        cur = c.execute("""INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
+                         foreman, total_workers, notes, plan_tomorrow, issues, issue_level, issue_status,
+                         cause, related_party, workflow_status, resolved_at, created_by)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""" if __import__("app.db", fromlist=["IS_PG"]).IS_PG else """INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
+                         foreman, total_workers, notes, plan_tomorrow, issues, issue_level, issue_status,
+                         cause, related_party, workflow_status, resolved_at, created_by)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                         (project_id, diary_date, morning_temp, morning_desc, foreman,
+                         total_workers, notes, plan_tomorrow, issues, issue_level, issue_status, cause,
+                         related_party, workflow_status, resolved_at, user["id"]))
+        if __import__("app.db", fromlist=["IS_PG"]).IS_PG:
+            diary_id = cur.fetchone()["id"]
         else:
-            cur = c.execute("""INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
-                             foreman, total_workers, notes, plan_tomorrow, issues, issue_level, issue_status,
-                             cause, related_party, workflow_status, resolved_at, created_by)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""" if __import__("app.db", fromlist=["IS_PG"]).IS_PG else """INSERT INTO diaries (project_id, date, weather_temp, weather_desc,
-                             foreman, total_workers, notes, plan_tomorrow, issues, issue_level, issue_status,
-                             cause, related_party, workflow_status, resolved_at, created_by)
-                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                             (project_id, diary_date, morning_temp, morning_desc, foreman,
-                             total_workers, notes, plan_tomorrow, issues, issue_level, issue_status, cause,
-                             related_party, workflow_status, resolved_at, user["id"]))
-            if __import__("app.db", fromlist=["IS_PG"]).IS_PG:
-                diary_id = cur.fetchone()["id"]
-            else:
-                diary_id = cur.lastrowid
+            diary_id = cur.lastrowid
 
         # Labor (dropdown approach)
         labor_ids_str = form.get("labor_ids", "")
