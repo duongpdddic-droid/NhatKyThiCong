@@ -305,6 +305,14 @@ async def diary_new(request: Request, project_id: int, user: Annotated[dict, Dep
         weather_rows = {r["session"]: dict(r) for r in c.execute(
             "SELECT session, temp, description AS desc, icon FROM project_weather_log "
             "WHERE project_id=? AND log_date=?", (project_id, target_date))}
+        # Prefill the form server-side from the cached/just-fetched observation
+        # so the weather is present even before (or without) the browser call.
+        weather_default = {}
+        for _session in ("morning", "afternoon"):
+            _row = weather_rows.get(_session) or {}
+            if _row.get("temp") is not None:
+                weather_default = {"temp": _row.get("temp"), "desc": _row.get("desc", "")}
+                break
         prev = c.execute(
             "SELECT * FROM diaries WHERE project_id=? AND date < ? ORDER BY date DESC LIMIT 1",
             (project_id, target_date)).fetchone()
@@ -330,6 +338,7 @@ async def diary_new(request: Request, project_id: int, user: Annotated[dict, Dep
         "prev_labor": prev_labor, "prev_machinery": prev_machinery,
         "prev_materials": prev_materials, "prev_photos": prev_photos,
         "diary": None,
+        "weather_default": weather_default,
         "weather_morning": weather_rows.get("morning", {}),
         "weather_afternoon": weather_rows.get("afternoon", {}),
     })
@@ -1530,50 +1539,73 @@ def project_reminders_save(request: Request, project_id: int,
 
 
 @app.get("/api/weather")
-async def weather_proxy(lat: float = 21.0, lon: float = 105.8, date: str = None):
+async def weather_proxy(project_id: int = None, lat: float = None, lon: float = None,
+                        date: str = None):
+    """Weather payload for the diary form.
+
+    The diary form asks by ``project_id`` so the answer is always keyed to the
+    project's own location and cached observation. Coordinates are only a
+    fallback for callers that have no project (the browser's geolocation never
+    matches a stored project position exactly).
+    """
     import httpx
     from datetime import date as d
     target = date or d.today().isoformat()
-    
-    # First, check cached weather in database
+    today = d.today().isoformat()
+    api_key = None
+    cached = {}
     c = connect()
     try:
-        rows = c.execute(
-            "SELECT session, temp, description AS desc, icon FROM project_weather_log "
-            "WHERE project_id=(SELECT id FROM projects WHERE lat=? AND lon=? LIMIT 1) AND log_date=?",
-            (lat, lon, target)
-        ).fetchall()
-        if rows:
-            # Return morning session data (or first available)
-            morning = next((r for r in rows if r["session"] == "morning"), rows[0])
-            c.close()
-            return {"temp": morning["temp"], "desc": morning["desc"], "icon": morning["icon"]}
+        if project_id:
+            project = c.execute("SELECT lat, lon FROM projects WHERE id=?", (project_id,)).fetchone()
+            if project:
+                lat = project["lat"] if project["lat"] is not None else 21.0
+                lon = project["lon"] if project["lon"] is not None else 105.8
+            rows = [dict(r) for r in c.execute(
+                "SELECT session, temp, description AS desc, icon FROM project_weather_log "
+                "WHERE project_id=? AND log_date=?", (project_id, target))]
+            # Prefer a session that actually holds an observation.
+            cached = next((r for r in rows if r.get("temp") is not None), {})
+        elif lat is not None and lon is not None:
+            project = c.execute(
+                "SELECT id FROM projects WHERE lat=? AND lon=? LIMIT 1", (lat, lon)).fetchone()
+            if project:
+                rows = [dict(r) for r in c.execute(
+                    "SELECT session, temp, description AS desc, icon FROM project_weather_log "
+                    "WHERE project_id=? AND log_date=?", (project["id"], target))]
+                cached = next((r for r in rows if r.get("temp") is not None), {})
+        setting = c.execute("SELECT value FROM settings WHERE key='openweather_api_key'").fetchone()
+        if setting and setting["value"]:
+            api_key = setting["value"]
     finally:
         c.close()
-    
-    # Only fetch from API if today (free API limitation)
-    if target != d.today().isoformat():
-        return {"temp": None, "desc": "Nhập thủ công (ngày khác hôm nay, chưa có cache)", "icon": ""}
-    
-    api_key = os.getenv("OPENWEATHER_API_KEY", "")
-    try:
-        c = connect()
-        row = c.execute("SELECT value FROM settings WHERE key='openweather_api_key'").fetchone()
-        c.close()
-        if row and row["value"]:
-            api_key = row["value"]
-    except Exception:
-        pass
+
+    if cached:
+        return {"temp": cached["temp"], "desc": cached.get("desc", ""),
+                "icon": cached.get("icon", ""), "source": "cache"}
+
+    # The free OpenWeather endpoint only serves the current day.
+    if target != today:
+        return {"temp": None, "desc": "Chưa có dữ liệu thời tiết lưu cho ngày này", "icon": "",
+                "source": "none"}
+
+    api_key = api_key or os.getenv("OPENWEATHER_API_KEY", "")
     if not api_key:
-        return {"temp": None, "desc": "Chưa cấu hình API key", "icon": "🌤️"}
+        return {"temp": None, "desc": "Chưa cấu hình API key", "icon": "🌤️", "source": "config"}
+    lat = 21.0 if lat is None else lat
+    lon = 105.8 if lon is None else lon
     url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=vi"
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url, timeout=10)
-        data = r.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, timeout=10)
+            data = r.json()
+    except Exception:
+        return {"temp": None, "desc": "Lỗi kết nối", "icon": "🌤️", "source": "error"}
     return {
         "temp": data.get("main", {}).get("temp"),
         "desc": data.get("weather", [{}])[0].get("description", ""),
         "icon": data.get("weather", [{}])[0].get("icon", ""),
+        "source": "api",
     }
 
 
