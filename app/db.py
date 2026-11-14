@@ -1,5 +1,6 @@
 """Database layer — SQLite (dev) / PostgreSQL (prod via DATABASE_URL)."""
 import os
+import threading
 from pathlib import Path
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -434,7 +435,18 @@ class _PgCursor:
         return self._cur.rowcount
 
 
+# Serializes schema creation inside this process: the app startup and the
+# reminder thread's lazy auto-init can otherwise run init_db() at the same time.
+_init_lock = threading.RLock()
+
+
 def init_db():
+    """Create the schema and seed defaults (idempotent)."""
+    with _init_lock:
+        _init_db()
+
+
+def _init_db():
     c = connect()
     try:
         schema = """
@@ -646,16 +658,30 @@ def init_db():
         _migrate_diary_issues_table(c)
         _migrate_acceptance_table(c)
         from app.auth import hash_password
-        # Only create admin if not exists (never overwrite password)
+        # Only create admin if not exists (never overwrite password).
+        # The seed is idempotent under concurrency: two processes/threads can
+        # both pass the check (app startup + the reminder thread's lazy
+        # auto-init, or two instances during a deploy) and the loser used to
+        # crash the whole startup with a UNIQUE violation.
         existing = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()
         if not existing:
             pw = hash_password("admin123")
-            if IS_PG:
-                c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (%s,%s,%s,%s)",
-                          ("admin", pw, "Quản trị viên", "admin"))
-            else:
-                c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
-                          ("admin", pw, "Quản trị viên", "admin"))
+            try:
+                if IS_PG:
+                    c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (%s,%s,%s,%s)",
+                              ("admin", pw, "Quản trị viên", "admin"))
+                else:
+                    c.execute("INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
+                              ("admin", pw, "Quản trị viên", "admin"))
+            except Exception:
+                # Somebody else created the admin row first: accept it (their
+                # password wins) instead of failing the startup.
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
+                if not c.execute("SELECT id FROM users WHERE username='admin'").fetchone():
+                    raise
         c.commit()
     finally:
         c.close()
