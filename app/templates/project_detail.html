@@ -11,7 +11,10 @@
   <a href="/projects/{{ project.id }}/diary/new" class="btn primary sm">+ Nhật ký</a>
 </div>
 <p style="color:var(--muted);font-size:13px;margin-bottom:12px;">{{ project.address }} | CĐT: {{ project.investor }}</p>
-{% if user.role == "admin" %}<a href="/projects/{{ project.id }}/edit" class="btn sm" style="margin-bottom:12px;">✏️ Sửa dự án</a>{% endif %}
+{% if user.role == "admin" %}
+<a href="/projects/{{ project.id }}/edit" class="btn sm" style="margin-bottom:12px;">✏️ Sửa dự án</a>
+<a href="/projects/{{ project.id }}/weekly-report" class="btn sm" style="margin-bottom:12px;">📊 Báo cáo tuần</a>
+{% endif %}
 
 <h3 style="margin-bottom:8px;">Nhật ký thi công</h3>
 {% for d in diaries %}

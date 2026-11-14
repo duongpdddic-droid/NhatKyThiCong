@@ -29,9 +29,12 @@
     <div class="stat-box"><div class="val">{{ p.start_date or '—' }}</div><div class="lbl">Bắt đầu</div></div>
     <div class="stat-box"><div class="val">{{ p.end_date or '—' }}</div><div class="lbl">Kết thúc</div></div>
   </div>
-  <div style="margin-top:10px;display:flex;gap:8px;">
+  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
     <a href="/projects/{{ p.id }}" class="btn sm">Xem</a>
     <a href="/projects/{{ p.id }}/diary/new" class="btn primary sm">+ Nhật ký</a>
+    {% if user.role == 'admin' %}
+    <a href="/projects/{{ p.id }}/weekly-report" class="btn sm">📊 Báo cáo tuần</a>
+    {% endif %}
   </div>
 </div>
 {% endfor %}

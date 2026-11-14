@@ -122,6 +122,17 @@ def test_weekly_report_page_renders(ctx):
     assert "Đổ bê tông" in r.text
 
 
+def test_project_page_links_to_the_weekly_report(ctx):
+    html = ctx["admin"].get("/projects/1").text
+    assert 'href="/projects/1/weekly-report"' in html, "project page has no weekly-report entry point"
+    assert "Báo cáo tuần" in html
+
+
+def test_dashboard_links_to_the_weekly_report(ctx):
+    html = ctx["admin"].get("/").text
+    assert 'href="/projects/1/weekly-report"' in html, "dashboard has no weekly-report entry point"
+
+
 def test_weekly_report_page_renders_for_empty_week(ctx):
     r = ctx["admin"].get("/projects/1/weekly-report?week_start=2026-01-05")
     assert r.status_code == 200
