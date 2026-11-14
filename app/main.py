@@ -2457,7 +2457,9 @@ def diary_pdf(request: Request, project_id: int, diary_id: int, user: Annotated[
 from datetime import datetime, timedelta
 
 @app.get("/projects/{project_id}/weekly-report", response_class=HTMLResponse)
-def weekly_report_page(request: Request, project_id: int, user=Depends(require_role("admin")), week_start: str = None):
+def weekly_report_page(request: Request, project_id: int,
+                       user: Annotated[dict, Depends(project_write_dep)],
+                       week_start: str = None):
     """Show weekly report page for a project."""
     if not week_start:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -2581,7 +2583,9 @@ def weekly_report_page(request: Request, project_id: int, user=Depends(require_r
 
 
 @app.post("/projects/{project_id}/weekly-report/send")
-async def weekly_report_send(request: Request, project_id: int, user=Depends(require_role("admin")), week_start: str = Form(...)):
+async def weekly_report_send(request: Request, project_id: int,
+                       user: Annotated[dict, Depends(project_write_dep)],
+                       week_start: str = Form(...)):
     """Generate and send weekly report via Telegram."""
     from app.telegram_bot import send_message, get_bot_token
     
@@ -2725,7 +2729,9 @@ async def weekly_report_send(request: Request, project_id: int, user=Depends(req
 
 
 @app.get("/projects/{project_id}/weekly-report/pdf")
-def weekly_report_pdf(request: Request, project_id: int, user=Depends(require_role("admin")), week_start: str = None):
+def weekly_report_pdf(request: Request, project_id: int,
+                      user: Annotated[dict, Depends(project_write_dep)],
+                      week_start: str = None):
     """Generate weekly report PDF."""
     if not week_start:
         today = datetime.now().strftime("%Y-%m-%d")

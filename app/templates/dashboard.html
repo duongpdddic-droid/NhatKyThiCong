@@ -32,7 +32,7 @@
   <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
     <a href="/projects/{{ p.id }}" class="btn sm">Xem</a>
     <a href="/projects/{{ p.id }}/diary/new" class="btn primary sm">+ Nhật ký</a>
-    {% if user.role == 'admin' %}
+    {% if user.role in ('admin', 'foreman') %}
     <a href="/projects/{{ p.id }}/weekly-report" class="btn sm">📊 Báo cáo tuần</a>
     {% endif %}
   </div>

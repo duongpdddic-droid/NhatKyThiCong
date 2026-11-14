@@ -81,18 +81,29 @@ def ctx():
               "VALUES (1,?,?,?,?,?)", (DIARY_DATE, "morning", 30.0, "nắng nhẹ", "01d"))
     c.execute("INSERT INTO recipients (project_id, name, telegram_chat_id, telegram_type, frequency) "
               "VALUES (1,'Nhóm thi công','-100777','group','weekly')")
+    # A second project nobody is assigned to, for the access-control checks.
+    c.execute("INSERT INTO projects (name, lat, lon) VALUES (?,?,?)", ("Công trình B", 21.0, 105.8))
     c.commit()
     c.close()
 
     admin = TestClient(mainmod.app)
     admin.cookies["access_token"] = create_access_token({"user_id": ids["audit-admin"], "role": "admin"})
     anon = TestClient(mainmod.app)
+    foreman = TestClient(mainmod.app)
+    foreman.cookies["access_token"] = create_access_token(
+        {"user_id": ids["site-foreman"], "role": "foreman"})
+    viewer = TestClient(mainmod.app)
+    viewer.cookies["access_token"] = create_access_token(
+        {"user_id": ids["site-viewer"], "role": "viewer"})
     try:
-        yield {"admin": admin, "anon": anon, "ids": ids, "diary_id": diary_id,
+        yield {"admin": admin, "anon": anon, "foreman": foreman, "viewer": viewer,
+               "ids": ids, "diary_id": diary_id,
                "other_diary": other_diary, "labor_id": labor_id, "machinery_id": mach_id}
     finally:
         admin.close()
         anon.close()
+        foreman.close()
+        viewer.close()
 
 
 def _count(sql, params=()):
@@ -131,6 +142,53 @@ def test_project_page_links_to_the_weekly_report(ctx):
 def test_dashboard_links_to_the_weekly_report(ctx):
     html = ctx["admin"].get("/").text
     assert 'href="/projects/1/weekly-report"' in html, "dashboard has no weekly-report entry point"
+
+
+def test_foreman_can_open_and_send_the_weekly_report(ctx, monkeypatch):
+    sent = []
+
+    async def fake_send(chat_id, text):
+        sent.append((chat_id, text))
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(tb, "send_message", fake_send)
+    monkeypatch.setattr(tb, "get_bot_token", lambda: "123:TOKEN")
+
+    r = ctx["foreman"].get(f"/projects/1/weekly-report?week_start={WEEK_START}")
+    assert r.status_code == 200, r.text[:300]
+    assert "Công trình A" in r.text
+
+    r = ctx["foreman"].post("/projects/1/weekly-report/send", data={"week_start": WEEK_START})
+    assert r.status_code == 200, r.text[:300]
+    assert r.json()["sent"] == 1
+    assert sent and sent[0][0] == "-100777"
+
+
+def test_foreman_link_is_visible_but_not_for_readers(ctx):
+    foreman_html = ctx["foreman"].get("/projects/1").text
+    assert 'href="/projects/1/weekly-report"' in foreman_html
+    assert "Báo cáo tuần" in foreman_html
+
+    viewer_html = ctx["viewer"].get("/projects/1").text
+    assert 'href="/projects/1/weekly-report"' not in viewer_html
+
+
+def test_foreman_dashboard_shows_the_report_link(ctx):
+    html = ctx["foreman"].get("/").text
+    assert 'href="/projects/1/weekly-report"' in html
+
+
+def test_weekly_report_is_scoped_to_assigned_projects(ctx):
+    # Foreman is not assigned to project 2 -> denied, not 500/200.
+    assert ctx["foreman"].get("/projects/2/weekly-report").status_code == 403
+    assert ctx["foreman"].post("/projects/2/weekly-report/send",
+                               data={"week_start": WEEK_START}).status_code == 403
+
+
+def test_readers_cannot_open_the_weekly_report(ctx):
+    assert ctx["viewer"].get("/projects/1/weekly-report").status_code == 403
+    assert ctx["anon"].get("/projects/1/weekly-report",
+                           follow_redirects=False).status_code in (302, 401, 403)
 
 
 def test_weekly_report_page_renders_for_empty_week(ctx):
