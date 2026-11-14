@@ -143,7 +143,8 @@ def test_new_diary_prefills_cached_weather(client):
     c.commit()
     c.close()
     html = _new_diary_html(tc, ctx["project_id"], today)
-    assert re.search(r'id="weather_temp"[^>]*value="26\.5"', html), "weather_temp not auto-filled"
+    # Weather is prefilled as a whole degree (26.5 -> 27), never as a decimal.
+    assert re.search(r'id="weather_temp"[^>]*value="27"', html), "weather_temp not auto-filled"
     assert re.search(r'id="weather_desc"[^>]*value="nắng nhẹ"', html), "weather_desc not auto-filled"
 
 

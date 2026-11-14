@@ -6,6 +6,7 @@ import re
 import uuid
 from pathlib import Path
 from datetime import date, datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException, Depends
@@ -347,7 +348,8 @@ async def diary_new(request: Request, project_id: int, user: Annotated[dict, Dep
         for _session in ("morning", "afternoon"):
             _row = weather_rows.get(_session) or {}
             if _row.get("temp") is not None:
-                weather_default = {"temp": _row.get("temp"), "desc": _row.get("desc", "")}
+                weather_default = {"temp": _round_temp(_row.get("temp")),
+                                   "desc": _row.get("desc", "")}
                 break
         prev = c.execute(
             "SELECT * FROM diaries WHERE project_id=? AND date < ? ORDER BY date DESC LIMIT 1",
@@ -1035,8 +1037,28 @@ def _valid_diary_date(value):
         return None
 
 
+def _round_temp(value):
+    """Weather temperature is a whole number of degrees.
+
+    OpenWeather returns values like 31.44; storing/displaying them as-is both
+    breaks the number input's step validation and is meaningless for a site
+    diary. Half-up rounding keeps 31.5 -> 32 (intuitive for operators).
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
 def _form_truthy(value):
     return str(value or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+# Templates render temperatures through this filter so every screen shows the
+# same whole degree value the server stores.
+templates.env.filters["tempdeg"] = _round_temp
 
 
 def _issue_photo_flags(form):
@@ -1098,13 +1120,11 @@ def _getlist_any(form, names):
 
 
 def _weather_form_value(form, prefix, fallback=None):
+    """Read a weather temperature field, rounded to whole degrees."""
     raw = form.get(prefix)
     if raw in (None, ""):
         return fallback
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
+    return _round_temp(raw)
 
 
 _GALLERY_ALIASES = ("photos_gallery", "photo_gallery", "gallery_photos")
@@ -1228,14 +1248,7 @@ async def diary_save(request: Request, project_id: int, user: Annotated[dict, De
             "<h3>Ngày thi công không hợp lệ</h3>"
             "<p>Chọn ngày theo định dạng YYYY-MM-DD rồi lưu lại.</p>",
             status_code=400)
-    weather_temp = form.get("weather_temp")
-    if weather_temp == "":
-        weather_temp = None
-    else:
-        try:
-            weather_temp = float(weather_temp)
-        except (ValueError, TypeError):
-            weather_temp = None
+    weather_temp = _round_temp(form.get("weather_temp"))
     weather_desc = form.get("weather_desc")
     morning_temp = _weather_form_value(form, "weather_morning_temp", weather_temp)
     morning_desc = form.get("weather_morning_desc") or weather_desc
@@ -1949,6 +1962,10 @@ async def diary_edit(request: Request, project_id: int, diary_id: int, user: Ann
         "prev_materials": materials, "prev_photos": photos,
         "diary": diary, "diary_id": diary_id, "existing_tasks": tasks,
         "existing_issues": existing_issues,
+        # The form falls back to weather_default when a legacy diary has no
+        # temperature; the edit route has no default to offer, but the key must
+        # exist so the template never touches an undefined variable.
+        "weather_default": {},
         "weather_morning": weather_rows.get("morning", {"temp": diary.get("weather_temp"), "desc": diary.get("weather_desc", "")}),
         "weather_afternoon": weather_rows.get("afternoon", {}),
     })
@@ -2209,14 +2226,7 @@ async def diary_edit_save(request: Request, project_id: int, diary_id: int, user
             "<h3>Ngày thi công không hợp lệ</h3>"
             "<p>Chọn ngày theo định dạng YYYY-MM-DD rồi lưu lại.</p>",
             status_code=400)
-    weather_temp = form.get("weather_temp")
-    if weather_temp == "":
-        weather_temp = None
-    else:
-        try:
-            weather_temp = float(weather_temp)
-        except (ValueError, TypeError):
-            weather_temp = None
+    weather_temp = _round_temp(form.get("weather_temp"))
     weather_desc = form.get("weather_desc")
     morning_temp = _weather_form_value(form, "weather_morning_temp", weather_temp)
     morning_desc = form.get("weather_morning_desc") or weather_desc

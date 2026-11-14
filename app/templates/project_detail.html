@@ -23,7 +23,7 @@
 <div class="diary-item {% if d.issue_level == 'high' %}issue-high{% elif d.issue_level == 'medium' %}issue-medium{% elif d.issue_level == 'low' %}issue-low{% endif %}">
   <div class="date">📅 {{ d.date }}</div>
   <div class="meta">
-    🌤️ {{ d.weather_temp }}°C — {{ d.weather_desc }} |
+    🌤️ {{ (d.weather_temp|tempdeg) if d.weather_temp is not none else '' }}°C — {{ d.weather_desc }} |
     👷 {{ d.total_workers }} người
     {% if d.issues %}<br>⚠️ {{ d.issues[:80] }}{% endif %}
   </div>

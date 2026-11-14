@@ -12,13 +12,25 @@ EXPORT_DIR = Path(__file__).parent.parent / "exports"
 EXPORT_DIR.mkdir(exist_ok=True)
 
 
+def _fmt_temp(value):
+    """Whole degrees (half-up, same as the web form), or '' when unknown."""
+    if value is None or value == "":
+        return ""
+    try:
+        from decimal import Decimal, ROUND_HALF_UP
+        return str(int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
+    except (TypeError, ValueError, ArithmeticError):
+        return ""
+
+
 def _weather_text(diary, weather):
     """Render both sessions while retaining the legacy morning fallback."""
     morning = weather.get("morning", {})
     afternoon = weather.get("afternoon", {})
-    mtemp = morning.get("temp", diary.get("weather_temp", ""))
+    mtemp = _fmt_temp(morning.get("temp", diary.get("weather_temp")))
     mdesc = morning.get("description", diary.get("weather_desc", ""))
-    a = f"; Chiều: {afternoon.get('temp', '')}°C — {afternoon.get('description', '')}" if afternoon else ""
+    a = (f"; Chiều: {_fmt_temp(afternoon.get('temp'))}°C — {afternoon.get('description', '')}"
+         if afternoon else "")
     return f"Sáng: {mtemp}°C — {mdesc}{a}"
 
 

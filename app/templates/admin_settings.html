@@ -9,7 +9,7 @@ async function testWeather() {
     const r = await fetch('/api/weather?lat=21.0&lon=105.8');
     const d = await r.json();
     if (d.temp !== null && d.temp !== undefined) {
-      res.innerHTML = '<span style="color:var(--success);">✅ OK:</span> ' + d.temp + '°C — ' + d.desc;
+      res.innerHTML = '<span style="color:var(--success);">✅ OK:</span> ' + Math.round(d.temp) + '°C — ' + d.desc;
     } else {
       res.innerHTML = '<span style="color:var(--danger);">❌ Lỗi:</span> ' + (d.desc || 'Không có dữ liệu. Kiểm tra API key.');
     }

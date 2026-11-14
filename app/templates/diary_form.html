@@ -24,11 +24,11 @@
     <div class="form-row">
       <div class="form-group">
         <label>Nhiệt độ (°C)</label>
-        <input type="number" step="0.1" name="weather_temp" id="weather_temp" value="{{ diary.weather_temp if diary else (weather_default.temp if weather_default.temp is not none else '') }}">
+        <input type="number" step="1" min="-30" max="60" name="weather_temp" id="weather_temp" value="{{ (diary.weather_temp|tempdeg) if diary and diary.weather_temp is not none else (weather_default.temp if weather_default and weather_default.temp is not none else '') }}">
       </div>
       <div class="form-group">
         <label>Thời tiết</label>
-        <input type="text" name="weather_desc" id="weather_desc" value="{{ diary.weather_desc if diary else (weather_default.desc or '') }}">
+        <input type="text" name="weather_desc" id="weather_desc" value="{{ diary.weather_desc if diary else (weather_default.desc or '') if weather_default else '' }}">
       </div>
     </div>
     <button type="button" class="btn sm" onclick="loadWeather(true)">🌤️ Lấy thời tiết</button>
@@ -434,7 +434,7 @@ function applyWeather(data, force) {
     setWeatherStatus(data.desc || 'Không lấy được dữ liệu thời tiết, vui lòng nhập tay.');
     return;
   }
-  if (force || !tempEl.value) tempEl.value = Number(data.temp).toFixed(1);
+  if (force || !tempEl.value) tempEl.value = Math.round(Number(data.temp));
   if (force || !descEl.value) descEl.value = data.desc || '';
   setWeatherStatus('');
 }

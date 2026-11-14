@@ -64,7 +64,10 @@ def test_edit_form_prefills_fields(client):
     assert "Vuong mac" in r.text
     assert "Dang xu ly" in r.text
     assert "CHT A" in r.text
-    assert "30.5" in r.text
+    # Weather is displayed/saved as a whole degree: the seeded 30.5 shows as 31.
+    assert 'id="weather_temp"' in r.text
+    assert 'value="31"' in r.text
+    assert "30.5" not in r.text
     assert "Nắng" in r.text
 
 

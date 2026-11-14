@@ -29,6 +29,17 @@ HTTP_POOL_TIMEOUT = 10.0
 HTTP_REQUEST_TIMEOUT = 180.0
 
 
+def _fmt_temp_deg(value):
+    """Weather is reported in whole degrees (half-up); unknown renders empty."""
+    if value is None or value == "":
+        return ""
+    try:
+        from decimal import Decimal, ROUND_HALF_UP
+        return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (TypeError, ValueError, ArithmeticError):
+        return ""
+
+
 def _compress_photo(photo_bytes: bytes, max_bytes: int = TELEGRAM_PHOTO_TARGET_BYTES) -> bytes:
     """Normalize a real image to a practical small JPEG before upload.
 
@@ -536,14 +547,15 @@ async def _send_diary_report_impl(project_id: int, diary_id: int):
         s = str(v) if v is not None else ""
         return (s[:n] + "…") if len(s) > n else s
 
+
     project_name = _esc(project.get("name", ""))
     morning = weather.get("morning", {})
     afternoon = weather.get("afternoon", {})
     weather_desc = _esc(morning.get("description", diary.get("weather_desc", "")))
-    weather_temp = _esc(morning.get("temp", diary.get("weather_temp", "")))
+    weather_temp = _esc(_fmt_temp_deg(morning.get("temp", diary.get("weather_temp"))))
     afternoon_text = ""
     if afternoon:
-        afternoon_text = f" | Chiều: {_esc(afternoon.get('temp', ''))}°C — {_esc(afternoon.get('description', ''))}"
+        afternoon_text = f" | Chiều: {_esc(_fmt_temp_deg(afternoon.get('temp')))}°C — {_esc(afternoon.get('description', ''))}"
     total_workers = _esc(diary.get("total_workers", 0))
     notes = _esc(_trunc(diary.get("notes", ""), 1000))
     legacy_issues = _esc(_trunc(diary.get("issues", ""), 1000))
